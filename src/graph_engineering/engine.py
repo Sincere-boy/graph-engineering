@@ -38,6 +38,16 @@ class StateGraphEngine:
             raise ValueError("a decision batch must contain one consecutive state")
         for event in events:
             self._validate_identity(event)
+        if state_id == "closed":
+            if any(event.actor_id != "organizer" for event in events):
+                raise AuthorizationError("only organizer may close a workspace")
+            return RouteDecision(
+                action="close",
+                active_node=None,
+                target_agent="organizer",
+                event_ids=[event.event_id for event in events],
+                state_id=state_id,
+            )
         self._validate_turn(events, expected_active_node)
 
         if state_id == "human_required":

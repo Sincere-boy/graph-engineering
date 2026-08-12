@@ -64,6 +64,22 @@ graphctl event append passive-qa-e2e \
 graphctl delivery list passive-qa-e2e
 ```
 
+不再参与调度的工作区应显式关闭；关闭会保留配置、Event Log、投递记录和飞书资源，
+但事件扫描、健康检查与异常恢复都会跳过它。只有显式 `resume` 才会重新进入运行态：
+
+```bash
+graphctl workspace close passive-qa-e2e
+graphctl workspace resume passive-qa-e2e
+```
+
+组织者也可以通过保留控制事件关闭工作区；后端消费该记录后进入 `closed`。其他 Agent
+无权写入，工作区配置也不能重定义这个状态：
+
+```bash
+graphctl event append passive-qa-e2e \
+  --actor organizer --state closed --message '本工作区验收已结束'
+```
+
 工作区进入 `completed` 后仍可开始新一轮任务。恢复事件必须由组织者写入一个配置中
 `allowed_writers` 包含组织者且 action 为 `activate` 的状态；目标 Agent 继续由配置决定：
 

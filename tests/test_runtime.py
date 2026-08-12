@@ -35,6 +35,19 @@ class Dashboard:
         return [{"sessionId": "s-org", "status": "ready", "workingDir": self.repository}]
 
 
+class ForbiddenDashboard:
+    def __init__(self):
+        self.calls = 0
+
+    async def dashboard_summary(self):
+        self.calls += 1
+        raise AssertionError("closed workspace must not inspect botmux")
+
+    async def sessions(self):
+        self.calls += 1
+        raise AssertionError("closed workspace must not inspect botmux")
+
+
 class CountingSQLiteStorage(SQLiteStorage):
     def __init__(self, path: Path):
         super().__init__(path)
@@ -103,6 +116,31 @@ async def test_runtime_processes_registered_workspaces_and_persists_health(tmp_p
     assert dispatcher.count == 1
     assert runtime.active_node == "checker"
     assert runtime.health == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_runtime_skips_processing_health_and_recovery_for_closed_workspace(
+    tmp_path: Path,
+) -> None:
+    storage = CountingSQLiteStorage(tmp_path / "control/state.db")
+    registry = WorkspaceRegistry(tmp_path / "control", storage)
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    await registry.register(config)
+    await registry.close(config.workspace.id)
+    writes_after_close = storage.runtime_writes
+    dashboard = ForbiddenDashboard()
+    dispatcher = Dispatcher()
+    service = RuntimeService(registry, storage, dispatcher, dashboard, stall_grace_seconds=0)
+
+    await service.process_once()
+    await service.health_once()
+
+    runtime = await storage.get_runtime(config.workspace.id)
+    assert runtime.status == "closed"
+    assert storage.runtime_writes == writes_after_close
+    assert dashboard.calls == 0
+    assert dispatcher.count == 0
+    assert dispatcher.recoveries == []
 
 
 @pytest.mark.asyncio

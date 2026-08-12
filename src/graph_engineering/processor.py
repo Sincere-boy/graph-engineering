@@ -127,6 +127,7 @@ class WorkspaceProcessor:
                 "activate": "running",
                 "pause": "paused",
                 "complete": "completed",
+                "close": "closed",
             }[decision.action]
             await self.storage.save_runtime(runtime)
             if runtime.status != "running":

@@ -24,7 +24,7 @@ const elements = {
 };
 
 const statusLabel = {
-  registered: "已登记", running: "运行中", paused: "已暂停", completed: "已完成",
+  registered: "已登记", running: "运行中", paused: "已暂停", closed: "已关闭", completed: "已完成",
   unhealthy: "异常", healthy: "健康", needs_attention: "需关注", degraded: "降级",
   unknown: "未知", ready: "就绪", working: "工作中", idle: "空闲", missing: "缺失",
   failed: "失败", offline: "离线", stopped: "已停止", isolated: "已隔离",

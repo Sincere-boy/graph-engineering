@@ -326,3 +326,36 @@ async def test_processor_distinguishes_known_and_unknown_delivery_failures(
 
     delivery_id = WorkspaceProcessor._delivery_id(config, [event])
     assert (await storage.get_delivery(delivery_id)).status == expected_status
+
+
+@pytest.mark.asyncio
+async def test_processor_closes_workspace_from_organizer_control_event(tmp_path: Path) -> None:
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    storage = SQLiteStorage(tmp_path / "closed.db")
+    await storage.initialize()
+    await storage.save_runtime(
+        WorkspaceRuntime(
+            workspace_id=config.workspace.id,
+            config_version=1,
+            config_hash=config.content_hash,
+            status="running",
+            active_node="checker",
+        )
+    )
+    event = Event(
+        event_id="close-event",
+        workspace_id=config.workspace.id,
+        config_version=1,
+        actor_id="organizer",
+        state_id="closed",
+        message="close this workspace",
+    )
+    log = EventLog(tmp_path / "closed.jsonl")
+    log.append(event)
+
+    await WorkspaceProcessor(storage, RecordingDispatcher()).process(config, log)
+
+    runtime = await storage.get_runtime(config.workspace.id)
+    assert runtime.status == "closed"
+    assert runtime.active_node is None
+    assert runtime.cursor > 0

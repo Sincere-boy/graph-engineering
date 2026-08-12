@@ -144,7 +144,7 @@ async def _append_workspace_event(
         decision = engine.decide(batch, event_lookup=lookup, expected_active_node=active_node)
         active_node = decision.active_node
         last_action = decision.action
-    if last_action in {"pause", "complete"}:
+    if last_action in {"pause", "complete", "close"}:
         raise ConfigError(f"event log already reached terminal action {last_action}")
     engine.decide([item], event_lookup=lookup, expected_active_node=active_node)
     cursor = event_log.append(item, expected_cursor=validated_cursor)
@@ -214,6 +214,18 @@ def pause_workspace(
 ) -> None:
     try:
         runtime = _run(_registry(control_dir).pause(workspace_id))
+    except Exception as exc:
+        _fail(exc)
+    typer.echo(runtime.model_dump_json())
+
+
+@workspace_app.command("close")
+def close_workspace(
+    workspace_id: str,
+    control_dir: ControlDir = DEFAULT_CONTROL_DIR,
+) -> None:
+    try:
+        runtime = _run(_registry(control_dir).close(workspace_id))
     except Exception as exc:
         _fail(exc)
     typer.echo(runtime.model_dump_json())

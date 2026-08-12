@@ -114,6 +114,13 @@ def test_cli_exposes_workspace_provision_command() -> None:
     assert "provision" in result.stdout
 
 
+def test_cli_exposes_workspace_close_command() -> None:
+    result = runner.invoke(app, ["workspace", "--help"])
+
+    assert result.exit_code == 0
+    assert "close" in result.stdout
+
+
 def test_cli_provision_exposes_reuse_bots_source() -> None:
     result = runner.invoke(app, ["workspace", "provision", "--help"])
 

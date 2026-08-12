@@ -50,7 +50,14 @@ ORGANIZER_PROTOCOL = """你是声明式工程状态图的组织者。路由由�
 将收到的事件批次压缩为清晰任务，保留 delivery_id 与 event_id；随后按指令投递到指定话题。
 遇到人工回复时，用 graphctl 写入 human_resolved 并引用原 human_required event_id。"""
 
-RESERVED_STATE_IDS = {"human_required", "human_resolved", "待人工", "人工已处理"}
+RESERVED_STATE_IDS = {
+    "human_required",
+    "human_resolved",
+    "closed",
+    "待人工",
+    "人工已处理",
+    "关闭",
+}
 
 
 class WorkspaceConfig(BaseModel):
@@ -103,8 +110,8 @@ class WorkspaceConfig(BaseModel):
         )
         if unknown_reserved or reserved_display:
             raise ConfigError(
-                "reserved human states are engine-managed; remove "
-                "human_required/human_resolved/待人工/人工已处理"
+                "reserved control states are engine-managed; remove "
+                "human_required/human_resolved/closed/待人工/人工已处理/关闭"
             )
         agent_ids = set(self.agents)
         errors: list[str] = []

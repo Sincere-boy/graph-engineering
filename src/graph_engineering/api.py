@@ -102,7 +102,12 @@ def create_app(
             def node(config: WorkspaceConfig, node_id: str | None) -> dict | None:
                 if node_id is None:
                     return None
-                labels = {"human": "人工", "completed": "完成", "paused": "暂停"}
+                labels = {
+                    "human": "人工",
+                    "completed": "完成",
+                    "paused": "暂停",
+                    "closed": "关闭",
+                }
                 agent = config.agents.get(node_id)
                 return {
                     "id": node_id,
@@ -124,6 +129,9 @@ def create_app(
                     state_name = "人工已处理"
                     original = event_lookup.get(event.causation_id or "")
                     target_id = original.actor_id if original is not None else None
+                elif event.state_id == "closed":
+                    state_name = "关闭"
+                    target_id = "closed"
                 else:
                     state_config = config.states.get(event.state_id)
                     state_name = (
@@ -174,7 +182,9 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         visible_active_node = runtime.active_node
-        if visible_active_node is None and runtime.status in {"paused", "completed"}:
+        if runtime.status == "closed":
+            visible_active_node = "closed"
+        elif visible_active_node is None and runtime.status in {"paused", "completed"}:
             visible_active_node = runtime.status
         nodes = [
             {
@@ -204,6 +214,12 @@ def create_app(
                     "label": "暂停",
                     "kind": "terminal",
                     "active": visible_active_node == "paused",
+                },
+                {
+                    "id": "closed",
+                    "label": "关闭",
+                    "kind": "terminal",
+                    "active": visible_active_node == "closed",
                 },
             ]
         )
@@ -235,6 +251,12 @@ def create_app(
                     "target": "organizer",
                     "state_id": "human_resolved",
                     "label": "人工已处理",
+                },
+                {
+                    "source": "organizer",
+                    "target": "closed",
+                    "state_id": "closed",
+                    "label": "关闭",
                 },
             ]
         )

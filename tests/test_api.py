@@ -155,6 +155,7 @@ def test_dashboard_page_and_assets_are_served(tmp_path: Path) -> None:
     assert "Event Log" in page.text
     assert script.status_code == 200
     assert "const REFRESH_INTERVAL = 1_000;" in script.text
+    assert 'closed: "已关闭"' in script.text
     assert stylesheet.status_code == 200
 
 

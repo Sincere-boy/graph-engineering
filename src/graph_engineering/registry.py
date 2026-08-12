@@ -85,6 +85,19 @@ class WorkspaceRegistry:
     async def resume(self, workspace_id: str) -> WorkspaceRuntime:
         return await self._set_status(workspace_id, "running")
 
+    async def close(self, workspace_id: str) -> WorkspaceRuntime:
+        await self._initialize()
+        runtime = await self.storage.get_runtime(workspace_id)
+        if runtime is None:
+            raise ConfigError(f"unknown workspace: {workspace_id}")
+        if runtime.status == "closed":
+            return runtime
+        runtime.status = "closed"
+        runtime.last_error = None
+        runtime.updated_at = utc_now()
+        await self.storage.save_runtime(runtime)
+        return runtime
+
     async def _set_status(self, workspace_id: str, status: str) -> WorkspaceRuntime:
         await self._initialize()
         runtime = await self.storage.get_runtime(workspace_id)
@@ -92,6 +105,8 @@ class WorkspaceRegistry:
             raise ConfigError(f"unknown workspace: {workspace_id}")
         if runtime.status == "completed":
             raise ConfigError("completed workspace cannot be paused or resumed")
+        if runtime.status == "closed" and status != "running":
+            raise ConfigError("closed workspace can only be resumed explicitly")
         runtime.status = status
         runtime.last_error = None
         runtime.updated_at = utc_now()
@@ -116,6 +131,7 @@ class WorkspaceRegistry:
         lines.append('    human{{"人工"}}')
         lines.append('    completed(("完成"))')
         lines.append('    paused(("暂停"))')
+        lines.append('    closed(("关闭"))')
         for state in config.states.values():
             destination = {
                 "complete": "completed",
@@ -127,6 +143,7 @@ class WorkspaceRegistry:
                 lines.append(f'    {self._mermaid_id(writer)} -->|"{label}"| {destination}')
         lines.append('    organizer -->|"待人工"| human')
         lines.append('    human -->|"人工已处理"| organizer')
+        lines.append('    organizer -->|"关闭"| closed')
         return "\n".join(lines) + "\n"
 
     def render_agent_prompt(self, config: WorkspaceConfig, agent_id: str) -> str:
@@ -139,6 +156,8 @@ class WorkspaceRegistry:
             if agent_id in state.allowed_writers
         ]
         state_lines = "\n".join(f"- `{state_id}`：{name}" for state_id, name in writable)
+        if agent_id == "organizer":
+            state_lines += "\n- `closed`：关闭工作区（引擎保留控制事件）"
         skill_lines = "\n".join(f"- `{skill}`" for skill in agent.skills)
         restart_protocol = (
             "\n\n工作区处于 completed 时，你可以通过上述命令写入一个配置允许组织者写入的 "

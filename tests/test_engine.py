@@ -37,6 +37,21 @@ def test_engine_enforces_allowed_writer(tmp_path: Path) -> None:
         engine.decide([make_event("e1", "checker", "begin")])
 
 
+def test_only_organizer_can_write_engine_managed_closed_event(tmp_path: Path) -> None:
+    engine = StateGraphEngine(WorkspaceConfig.model_validate(valid_config(tmp_path)))
+
+    decision = engine.decide(
+        [make_event("close-1", "organizer", "closed")],
+        expected_active_node="checker",
+    )
+
+    assert decision.action == "close"
+    assert decision.active_node is None
+    assert decision.target_agent == "organizer"
+    with pytest.raises(AuthorizationError, match="only organizer"):
+        engine.decide([make_event("close-2", "maker", "closed")])
+
+
 def test_consecutive_aggregation_preserves_causal_order() -> None:
     events = [
         make_event("1", "maker", "inspect"),

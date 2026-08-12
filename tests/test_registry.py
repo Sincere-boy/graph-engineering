@@ -79,6 +79,22 @@ async def test_completed_workspace_cannot_be_reopened_via_pause(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_closed_workspace_stops_until_explicit_resume(tmp_path: Path) -> None:
+    registry = WorkspaceRegistry(tmp_path / "control")
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    await registry.register(config)
+    await registry.resume(config.workspace.id)
+
+    closed = await registry.close(config.workspace.id)
+
+    assert closed.status == "closed"
+    assert (await registry.close(config.workspace.id)).status == "closed"
+    with pytest.raises(ConfigError, match="closed"):
+        await registry.pause(config.workspace.id)
+    assert (await registry.resume(config.workspace.id)).status == "running"
+
+
+@pytest.mark.asyncio
 async def test_config_update_does_not_publish_snapshot_when_event_log_is_corrupt(
     tmp_path: Path,
 ) -> None:

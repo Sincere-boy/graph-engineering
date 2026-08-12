@@ -74,12 +74,19 @@ class RuntimeService:
 
     async def health_once(self) -> None:
         await self.registry._initialize()
+        runtimes = [
+            runtime
+            for runtime in await self.storage.list_runtimes()
+            if runtime.status != "closed"
+        ]
+        if not runtimes:
+            return
         try:
             summary, sessions = await asyncio.gather(
                 self.dashboard.dashboard_summary(), self.dashboard.sessions()
             )
         except Exception as exc:
-            for runtime in await self.storage.list_runtimes():
+            for runtime in runtimes:
                 if runtime.status not in {"completed"}:
                     new_error = f"botmux health read failed: {exc}"
                     if runtime.health != "degraded" or runtime.last_error != new_error:
@@ -87,11 +94,11 @@ class RuntimeService:
                         runtime.last_error = new_error
                         await self.storage.save_runtime(runtime)
             return
-        for listed_runtime in await self.storage.list_runtimes():
+        for listed_runtime in runtimes:
             lock = self._locks.setdefault(listed_runtime.workspace_id, asyncio.Lock())
             async with lock:
                 runtime = await self.storage.get_runtime(listed_runtime.workspace_id)
-                if runtime is None:
+                if runtime is None or runtime.status == "closed":
                     continue
                 provisioning = await self.storage.get_provisioning(runtime.workspace_id)
                 if provisioning is None:
