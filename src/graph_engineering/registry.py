@@ -62,6 +62,11 @@ class WorkspaceRegistry:
             cursor = entries[-1][1] if entries else 0
         self._atomic_write(snapshot, config.to_yaml())
         self._atomic_write(directory / "workspace.yaml", config.to_yaml())
+        active_node = None
+        if current is not None and (
+            current.active_node in config.agents or current.active_node == "human"
+        ):
+            active_node = current.active_node
         runtime = WorkspaceRuntime(
             workspace_id=workspace_id,
             config_version=config.workspace.version,
@@ -69,6 +74,7 @@ class WorkspaceRegistry:
             status="registered" if current is None else "paused",
             cursor=cursor,
             event_log_identity=event_log_identity,
+            active_node=active_node,
         )
         await self.storage.save_runtime(runtime)
         return runtime

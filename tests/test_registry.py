@@ -14,7 +14,9 @@ async def test_registry_freezes_active_config_and_versions_paused_updates(tmp_pa
     first = WorkspaceConfig.model_validate(valid_config(tmp_path))
 
     runtime = await registry.register(first)
-    await registry.resume(first.workspace.id)
+    active = await registry.resume(first.workspace.id)
+    active.active_node = "maker"
+    await registry.storage.save_runtime(active)
     changed_raw = valid_config(tmp_path)
     changed_raw["agents"]["maker"]["prompt"] = "changed"
     changed = WorkspaceConfig.model_validate(changed_raw)
@@ -32,6 +34,7 @@ async def test_registry_freezes_active_config_and_versions_paused_updates(tmp_pa
 
     assert runtime.config_hash == first.content_hash
     assert updated.config_version == 2
+    assert updated.active_node == "maker"
     assert (registry.workspace_dir(first.workspace.id) / "config-v1.yaml").exists()
     assert (registry.workspace_dir(first.workspace.id) / "config-v2.yaml").exists()
 
