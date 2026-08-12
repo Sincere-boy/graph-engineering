@@ -1,0 +1,58 @@
+schema_version: 1
+workspace:
+  id: passive-qa-e2e
+  name: passive_qa_agent 隔离验收
+  version: 1
+  repository: /home/zhangjianpeng.hello/.graph_engineering/worktrees/passive-qa-e2e
+
+agents:
+  developer:
+    display_name: 研发
+    prompt: |
+      在隔离 worktree 中完成收到的开发任务。保持改动最小且可审计，运行相关测试。
+      完成后写入 pending_review；如需人工输入，写入 human_required。
+    skills: []
+  reviewer:
+    display_name: Reviewer
+    prompt: |
+      审查隔离 worktree 中的实际改动与测试证据。存在阻断问题时写入 needs_fix，
+      通过时写入 pending_test。不要代替研发修改代码。
+    skills: []
+  qa:
+    display_name: QA
+    prompt: |
+      在隔离 worktree 中执行 /usr/local/go/bin/go test ./...，并在 frontend 目录执行
+      npm test -- --run。全部通过后写入 completed；失败时写入 needs_fix，并保留输出摘要。
+    skills: []
+
+states:
+  pending_development:
+    display_name: 待开发
+    allowed_writers: [organizer]
+    action:
+      type: activate
+      target: developer
+  pending_review:
+    display_name: 待 review
+    allowed_writers: [developer]
+    action:
+      type: activate
+      target: reviewer
+  needs_fix:
+    display_name: 待修复
+    allowed_writers: [reviewer, qa]
+    action:
+      type: activate
+      target: developer
+  pending_test:
+    display_name: 待测试
+    allowed_writers: [reviewer]
+    action:
+      type: activate
+      target: qa
+  completed:
+    display_name: 任务完成
+    allowed_writers: [qa]
+    action:
+      type: complete
+
