@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Workspace Graph Console</title>
+    <link rel="stylesheet" href="/assets/dashboard.css" />
+  </head>
+  <body>
+    <main class="app-shell" data-app-root>
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Workspace Graph Console 首页">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i>
+          </span>
+          <span>
+            <strong>Workspace Graph</strong>
+            <small>Console</small>
+          </span>
+        </a>
+        <div class="connection" id="connection-state">
+          <span class="connection-dot"></span>
+          <span>正在连接</span>
+        </div>
+      </header>
+
+      <section class="workspace-summary" aria-labelledby="workspace-overview-title">
+        <div>
+          <p class="eyebrow">ENGINEERING CONTROL PLANE</p>
+          <h1 id="workspace-overview-title">工作区运行态</h1>
+          <p class="lede">一处观察所有协作图、固定 Session 与当前活跃节点。</p>
+        </div>
+        <div class="summary-counters" id="summary-counters" aria-live="polite"></div>
+      </section>
+
+      <div class="dashboard-grid">
+        <aside class="workspace-panel panel" aria-labelledby="workspace-list-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">WORKSPACES</p>
+              <h2 id="workspace-list-title">全部工作区</h2>
+            </div>
+            <button class="icon-button" id="refresh-button" type="button" title="刷新数据" aria-label="刷新数据">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
+            </button>
+          </div>
+          <div class="workspace-list" id="workspace-list" role="listbox" aria-label="工作区列表"></div>
+        </aside>
+
+        <section class="detail-column" id="workspace-detail" aria-live="polite">
+          <div class="empty-state panel">
+            <div class="empty-orbit" aria-hidden="true"><span></span></div>
+            <h2>选择一个工作区</h2>
+            <p>查看它的实时协作图与 Session 状态。</p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <template id="workspace-detail-template">
+      <article class="detail-header panel">
+        <div>
+          <p class="eyebrow">SELECTED WORKSPACE</p>
+          <div class="title-row">
+            <h2 data-field="name"></h2>
+            <span data-field="status-badge"></span>
+          </div>
+          <p class="repository" data-field="repository"></p>
+        </div>
+        <dl class="runtime-meta">
+          <div><dt>配置版本</dt><dd data-field="version"></dd></div>
+          <div><dt>运行健康度</dt><dd data-field="health"></dd></div>
+          <div><dt>最后更新</dt><dd data-field="updated-at"></dd></div>
+        </dl>
+      </article>
+
+      <article class="graph-panel panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">STATE GRAPH</p>
+            <h2>协作状态图</h2>
+          </div>
+          <div class="graph-legend"><span><i class="legend-active"></i>活跃节点</span><span><i></i>普通节点</span></div>
+        </div>
+        <div class="graph-stage" data-field="graph" role="img" aria-label="工作区状态图"></div>
+      </article>
+
+      <article class="sessions-panel panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">FIXED SESSIONS</p>
+            <h2>Session 状态</h2>
+          </div>
+          <span class="count-pill" data-field="session-count"></span>
+        </div>
+        <div class="session-table-wrap">
+          <table>
+            <thead><tr><th>Agent / Session</th><th>状态</th><th>绑定</th><th>工作目录</th></tr></thead>
+            <tbody data-field="sessions"></tbody>
+          </table>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="/assets/dashboard.js"></script>
+  </body>
+</html>
