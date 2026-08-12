@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -148,6 +149,58 @@ async def test_provision_rejects_incomplete_reused_app_set_before_side_effects(
     assert admin.configured == []
     assert admin.groups == 0
     assert admin.topics == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_provisioning_serializes_external_resource_creation(
+    tmp_path: Path,
+) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+
+    class SlowAdmin(FakeAdmin):
+        async def create_bot(self, *, name: str, working_dir: str, cli_id: str) -> str:
+            await asyncio.sleep(0.01)
+            return await super().create_bot(name=name, working_dir=working_dir, cli_id=cli_id)
+
+        async def create_group(
+            self, *, name: str, app_ids: list[str], working_dir: str, profile_id: str
+        ) -> str:
+            await asyncio.sleep(0.01)
+            return await super().create_group(
+                name=name,
+                app_ids=app_ids,
+                working_dir=working_dir,
+                profile_id=profile_id,
+            )
+
+        async def create_topic(
+            self,
+            *,
+            app_id: str,
+            chat_id: str,
+            title: str,
+            instruction: str,
+            idempotency_key: str,
+        ) -> tuple[str, str]:
+            await asyncio.sleep(0.01)
+            return await super().create_topic(
+                app_id=app_id,
+                chat_id=chat_id,
+                title=title,
+                instruction=instruction,
+                idempotency_key=idempotency_key,
+            )
+
+    admin = SlowAdmin()
+    first, second = await asyncio.gather(
+        Provisioner(tmp_path, admin).provision(config),
+        Provisioner(tmp_path, admin).provision(config),
+    )
+
+    assert first == second
+    assert len(admin.created) == 2
+    assert admin.groups == 1
+    assert admin.topics == 2
 
 
 @pytest.mark.asyncio

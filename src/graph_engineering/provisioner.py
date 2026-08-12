@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import tempfile
@@ -318,6 +319,30 @@ class Provisioner:
         cli_id: str = "codex",
         name_prefix: str = "GE",
         reuse_apps: dict[str, str] | None = None,
+    ) -> WorkspaceProvisioning:
+        workspace_dir = self.control_dir / "workspaces" / config.workspace.id
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = workspace_dir / "provision.lock"
+        lock_stream = lock_path.open("a+b")
+        try:
+            await asyncio.to_thread(fcntl.flock, lock_stream.fileno(), fcntl.LOCK_EX)
+            return await self._provision_locked(
+                config,
+                cli_id=cli_id,
+                name_prefix=name_prefix,
+                reuse_apps=reuse_apps,
+            )
+        finally:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+            lock_stream.close()
+
+    async def _provision_locked(
+        self,
+        config: WorkspaceConfig,
+        *,
+        cli_id: str,
+        name_prefix: str,
+        reuse_apps: dict[str, str] | None,
     ) -> WorkspaceProvisioning:
         existing: WorkspaceProvisioning | None = None
         if self.storage is not None:
