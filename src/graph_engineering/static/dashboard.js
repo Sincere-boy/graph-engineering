@@ -1,5 +1,5 @@
 const API = "/api/v1";
-const REFRESH_INTERVAL = 10_000;
+const REFRESH_INTERVAL = 1_000;
 
 const state = {
   workspaces: [],

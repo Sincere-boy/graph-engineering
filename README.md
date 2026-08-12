@@ -35,7 +35,7 @@ graphctl service run --control-dir ~/.graph_engineering
 启动服务后可直接打开 [http://127.0.0.1:8765/](http://127.0.0.1:8765/) 使用
 Workspace Graph Console。页面会列出全部工作区及运行/健康状态；选择工作区后可查看
 固定 Session 和额外 Session 的实时状态，以及由冻结配置生成的状态图。图中绿色发光节点
-代表当前活跃节点。页面每 10 秒自动刷新，也可手动刷新。
+代表当前活跃节点。页面每 1 秒自动刷新，也可手动刷新。
 
 在独立 worktree 中开发时，若 Conda 环境的 editable 安装仍指向原仓库，可显式使用当前
 源码启动，避免误用其他 worktree：
