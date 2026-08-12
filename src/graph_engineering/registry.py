@@ -140,6 +140,12 @@ class WorkspaceRegistry:
             if agent_id == "organizer"
             else ""
         )
+        agent_handoff_protocol = (
+            "禁止 @组织者，不得直接向组织者发送消息，也不得通过任何 Botmux 命令跨话题回报；"
+            "后端会在检测到 Event Log 新记录后自行调用组织者。"
+            if agent_id != "organizer"
+            else ""
+        )
         return (
             f"# 角色：{agent.display_name}\n\n{agent.prompt}\n\n"
             f"工作区：`{config.workspace.id}`\n"
@@ -155,6 +161,7 @@ class WorkspaceRegistry:
             "需要人工决定时写 `human_required`；不要自行假设人工答案。\n\n"
             "通讯协议：初始化后始终在当前固定话题内协作，禁止创建新话题。"
             "禁止使用 `botmux report`、`botmux dispatch --title` 或顶层消息回报；"
+            f"{agent_handoff_protocol}"
             "完成、失败与返工只通过上述 `graphctl event append` 写入状态事件。"
             f"{restart_protocol}"
         )

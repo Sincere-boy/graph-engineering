@@ -107,6 +107,8 @@ def test_registry_renders_generic_mermaid_and_agent_prompt(tmp_path: Path) -> No
     assert 'maker -->|"进入检查"| checker' in diagram
     assert "graphctl event append" in prompt
     assert "禁止使用 `botmux report`" in prompt
+    assert "禁止 @组织者" in prompt
+    assert "不得直接向组织者发送消息" in prompt
     assert "禁止创建新话题" in prompt
     assert "inspect" in prompt
     assert "done" not in prompt
