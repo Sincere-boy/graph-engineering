@@ -3,7 +3,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from graph_engineering.config import WorkspaceConfig
+from graph_engineering.config import ConfigError, WorkspaceConfig
 from graph_engineering.provisioner import BotmuxAdminClient, Provisioner
 from graph_engineering.storage import SQLiteStorage
 
@@ -106,6 +106,48 @@ async def test_provision_is_idempotent_and_creates_one_topic_per_agent(tmp_path:
     assert admin.topics == 2
     assert {item.agent_id for item in first.bindings} == {"organizer", "developer"}
     assert "flowchart LR" in admin.profile_entries[(first.role_profile_id, "app-0")]
+
+
+@pytest.mark.asyncio
+async def test_provision_reuses_apps_but_creates_a_new_group_and_topics(tmp_path: Path) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+    admin = FakeAdmin()
+
+    result = await Provisioner(tmp_path, admin).provision(
+        config,
+        reuse_apps={"organizer": "existing-organizer", "developer": "existing-developer"},
+    )
+
+    assert admin.created == []
+    assert admin.groups == 1
+    assert admin.topics == 2
+    assert {item.agent_id: item.lark_app_id for item in result.bindings} == {
+        "organizer": "existing-organizer",
+        "developer": "existing-developer",
+    }
+    assert {item.root_message_id for item in result.bindings} == {
+        "om_existing-organizer",
+        "om_existing-developer",
+    }
+
+
+@pytest.mark.asyncio
+async def test_provision_rejects_incomplete_reused_app_set_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+    admin = FakeAdmin()
+
+    with pytest.raises(ConfigError, match="missing agents: developer"):
+        await Provisioner(tmp_path, admin).provision(
+            config,
+            reuse_apps={"organizer": "existing-organizer"},
+        )
+
+    assert admin.created == []
+    assert admin.configured == []
+    assert admin.groups == 0
+    assert admin.topics == 0
 
 
 @pytest.mark.asyncio

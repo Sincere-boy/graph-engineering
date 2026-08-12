@@ -55,6 +55,9 @@ PYTHONPATH=src graphctl service run --control-dir ~/.graph_engineering
 graphctl config validate examples/passive-qa-e2e.yaml
 graphctl workspace register examples/passive-qa-e2e.yaml
 graphctl workspace provision passive-qa-e2e
+# 或复用另一个工作区的应用身份，同时创建独立的新群、固定话题和 session
+graphctl workspace provision passive-qa-e2e \
+  --reuse-bots-from provisioned-source-workspace
 graphctl workspace resume passive-qa-e2e
 graphctl event append passive-qa-e2e \
   --actor organizer --state pending_development --message '实现任务说明'
@@ -75,8 +78,9 @@ graphctl event append passive-qa-e2e \
 恢复操作会保留上一轮完整 Event Log，追加新的审计事件，并从该事件继续消费；裸
 `workspace resume` 仍只用于尚未完成的 registered/paused 工作区。
 
-`workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，创建
-全新应用，写 Role Profile，创建群、话题和 session，并原子保存可恢复 checkpoint。
+`workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，默认
+创建全新应用；指定 `--reuse-bots-from` 时按稳定 Agent ID 复用来源工作区的应用身份，但
+始终为目标工作区创建独立的新群、固定话题和 session。命令会写 Role Profile，并原子保存可恢复 checkpoint。
 重复执行不会重复创建已完成资源；它会重新协调 Bot 配置、群成员与 Role Profile，
 因此协议修复会应用到既有固定话题而不新增话题。
 

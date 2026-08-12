@@ -114,6 +114,13 @@ def test_cli_exposes_workspace_provision_command() -> None:
     assert "provision" in result.stdout
 
 
+def test_cli_provision_exposes_reuse_bots_source() -> None:
+    result = runner.invoke(app, ["workspace", "provision", "--help"])
+
+    assert result.exit_code == 0
+    assert "--reuse-bots-from" in result.stdout
+
+
 def test_cli_rejects_event_after_queued_terminal_event(tmp_path: Path) -> None:
     config_path = tmp_path / "workspace.yaml"
     config_path.write_text(

@@ -317,6 +317,7 @@ class Provisioner:
         *,
         cli_id: str = "codex",
         name_prefix: str = "GE",
+        reuse_apps: dict[str, str] | None = None,
     ) -> WorkspaceProvisioning:
         existing: WorkspaceProvisioning | None = None
         if self.storage is not None:
@@ -352,6 +353,27 @@ class Provisioner:
                     },
                 )
         apps: dict[str, str] = checkpoint.setdefault("apps", {})
+        if reuse_apps is not None:
+            missing_agents = [
+                agent_id for agent_id in ordered_agents if not reuse_apps.get(agent_id)
+            ]
+            if missing_agents:
+                raise ConfigError(
+                    "reused bot source is missing agents: " + ", ".join(missing_agents)
+                )
+            conflicts = [
+                agent_id
+                for agent_id in ordered_agents
+                if apps.get(agent_id) and apps[agent_id] != reuse_apps[agent_id]
+            ]
+            if conflicts:
+                raise ConfigError(
+                    "workspace checkpoint already contains different apps for agents: "
+                    + ", ".join(conflicts)
+                )
+            for agent_id in ordered_agents:
+                apps.setdefault(agent_id, reuse_apps[agent_id])
+            self._save_checkpoint(checkpoint_path, checkpoint)
         profile_id = str(checkpoint.setdefault("profile_id", f"graph-{config.workspace.id}"))
         registry = (
             WorkspaceRegistry(self.control_dir, storage=self.storage)

@@ -312,6 +312,10 @@ def provision_workspace(
     control_dir: ControlDir = DEFAULT_CONTROL_DIR,
     cli_id: Annotated[str, typer.Option(help="botmux onboarding CLI selection id")] = "codex",
     name_prefix: Annotated[str, typer.Option(help="New Feishu application name prefix")] = "GE",
+    reuse_bots_from: Annotated[
+        str | None,
+        typer.Option(help="Reuse agent application identities from a provisioned workspace"),
+    ] = None,
 ) -> None:
     async def provision() -> object:
         registry = _registry(control_dir)
@@ -320,11 +324,26 @@ def provision_workspace(
         if runtime is None:
             raise ConfigError(f"unknown workspace: {workspace_id}")
         config = registry.load_config(workspace_id)
+        reuse_apps: dict[str, str] | None = None
+        if reuse_bots_from is not None:
+            if reuse_bots_from == workspace_id:
+                raise ConfigError("reuse source must be a different workspace")
+            source = await registry.storage.get_provisioning(reuse_bots_from)
+            if source is None:
+                raise ConfigError(
+                    f"reuse source workspace is not provisioned: {reuse_bots_from}"
+                )
+            reuse_apps = {
+                binding.agent_id: binding.lark_app_id for binding in source.bindings
+            }
         base_url, token = _dashboard_connection()
         client = BotmuxAdminClient(base_url, token=token)
         try:
             return await Provisioner(control_dir, client, storage=registry.storage).provision(
-                config, cli_id=cli_id, name_prefix=name_prefix
+                config,
+                cli_id=cli_id,
+                name_prefix=name_prefix,
+                reuse_apps=reuse_apps,
             )
         finally:
             await client.close()
