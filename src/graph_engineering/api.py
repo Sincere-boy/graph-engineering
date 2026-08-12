@@ -61,4 +61,11 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return [event.model_dump(mode="json") for event in events]
 
+    @app.get("/api/v1/workspaces/{workspace_id}/deliveries")
+    async def get_workspace_deliveries(workspace_id: str) -> list[dict]:
+        return [
+            delivery.model_dump(mode="json")
+            for delivery in await storage.list_deliveries(workspace_id)
+        ]
+
     return app

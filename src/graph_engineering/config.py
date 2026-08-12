@@ -72,11 +72,18 @@ class WorkspaceConfig(BaseModel):
             raw_agents = dict(raw.get("agents") or {})
             organizer = dict(raw_agents.get("organizer") or {})
             user_prompt = str(organizer.get("prompt", "")).strip()
+            if organizer.get("system_managed") is True and user_prompt.startswith(
+                ORGANIZER_PROTOCOL
+            ):
+                effective_prompt = user_prompt
+            else:
+                effective_prompt = ORGANIZER_PROTOCOL + (
+                    f"\n\n用户补充：\n{user_prompt}" if user_prompt else ""
+                )
             organizer.update(
                 {
                     "display_name": organizer.get("display_name", "组织者"),
-                    "prompt": ORGANIZER_PROTOCOL
-                    + (f"\n\n用户补充：\n{user_prompt}" if user_prompt else ""),
+                    "prompt": effective_prompt,
                     "skills": organizer.get("skills", []),
                     "system_managed": True,
                 }
@@ -101,6 +108,13 @@ class WorkspaceConfig(BaseModel):
             )
         agent_ids = set(self.agents)
         errors: list[str] = []
+        managed_agents = [
+            agent_id
+            for agent_id, agent in self.agents.items()
+            if agent.system_managed and agent_id != "organizer"
+        ]
+        if managed_agents:
+            errors.append(f"only organizer may be system-managed: {managed_agents}")
         terminal = False
         for state_id, state in self.states.items():
             missing_writers = set(state.allowed_writers) - agent_ids

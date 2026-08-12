@@ -14,16 +14,25 @@ class EventLogCorrupt(RuntimeError):
     pass
 
 
+class EventLogConflict(RuntimeError):
+    pass
+
+
 class EventLog:
     def __init__(self, path: Path):
         self.path = path
 
-    def append(self, event: Event) -> int:
+    def append(self, event: Event, *, expected_cursor: int | None = None) -> int:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a+b") as stream:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
             stream.seek(0)
-            existing, _ = self._read_locked(stream, 0)
+            existing, current_cursor = self._read_locked(stream, 0)
+            if expected_cursor is not None and current_cursor != expected_cursor:
+                raise EventLogConflict(
+                    f"event log changed after validation: expected cursor "
+                    f"{expected_cursor}, found {current_cursor}"
+                )
             if any(item.event_id == event.event_id for item in existing):
                 raise ValueError(f"duplicate event_id: {event.event_id}")
             stream.seek(0, os.SEEK_END)

@@ -19,6 +19,7 @@ class Storage(Protocol):
     async def list_runtimes(self) -> list[WorkspaceRuntime]: ...
     async def save_delivery(self, delivery: Delivery) -> None: ...
     async def get_delivery(self, delivery_id: str) -> Delivery | None: ...
+    async def list_deliveries(self, workspace_id: str) -> list[Delivery]: ...
     async def pending_deliveries(self, workspace_id: str) -> list[Delivery]: ...
     async def save_provisioning(self, provisioning: WorkspaceProvisioning) -> None: ...
     async def get_provisioning(self, workspace_id: str) -> WorkspaceProvisioning | None: ...
@@ -119,6 +120,16 @@ class SQLiteStorage:
                 ).fetchall()
         return [Delivery.model_validate_json(row["payload"]) for row in rows]
 
+    async def list_deliveries(self, workspace_id: str) -> list[Delivery]:
+        async with self._lock:
+            with self._connect() as db:
+                rows = db.execute(
+                    "SELECT payload FROM deliveries WHERE workspace_id=? "
+                    "ORDER BY delivery_id",
+                    (workspace_id,),
+                ).fetchall()
+        return [Delivery.model_validate_json(row["payload"]) for row in rows]
+
     async def save_provisioning(self, provisioning: WorkspaceProvisioning) -> None:
         async with self._lock:
             with self._connect() as db:
@@ -194,6 +205,14 @@ class MongoStorage:
                 self.db.deliveries.find({"workspace_id": workspace_id, "status": "pending"}).sort(
                     "delivery_id", 1
                 )
+            )
+        )
+        return [Delivery.model_validate(row) for row in rows]
+
+    async def list_deliveries(self, workspace_id: str) -> list[Delivery]:
+        rows = await asyncio.to_thread(
+            lambda: list(
+                self.db.deliveries.find({"workspace_id": workspace_id}).sort("delivery_id", 1)
             )
         )
         return [Delivery.model_validate(row) for row in rows]

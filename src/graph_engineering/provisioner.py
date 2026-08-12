@@ -11,7 +11,7 @@ import httpx
 
 from graph_engineering.botmux import BotmuxError, DeliveryUncertain
 from graph_engineering.config import ConfigError, WorkspaceConfig
-from graph_engineering.models import SessionBinding, WorkspaceProvisioning
+from graph_engineering.models import SessionBinding, WorkspaceProvisioning, utc_now
 from graph_engineering.registry import WorkspaceRegistry
 from graph_engineering.storage import Storage
 
@@ -21,9 +21,19 @@ class BotmuxAdmin(Protocol):
 
     async def put_role_profile(self, profile_id: str, app_id: str, content: str) -> None: ...
 
+    async def configure_bot(self, *, app_id: str, cli_id: str) -> None: ...
+
     async def create_group(
         self, *, name: str, app_ids: list[str], working_dir: str, profile_id: str
     ) -> str: ...
+
+    async def ensure_group_bots(self, *, chat_id: str, app_ids: list[str]) -> None: ...
+
+    async def leave_group_bots(self, *, chat_id: str, app_ids: list[str]) -> None: ...
+
+    async def apply_role_profile(
+        self, *, profile_id: str, app_id: str, chat_id: str
+    ) -> None: ...
 
     async def create_topic(
         self,
@@ -103,7 +113,6 @@ class BotmuxAdminClient:
                 "cliId": cli_id,
                 "workingDir": working_dir,
                 "dirMode": "fixed",
-                "requireCriticalScopesBeforeActivation": True,
             },
         )
         job = started.get("job") or {}
@@ -160,6 +169,25 @@ class BotmuxAdminClient:
         if payload.get("ok") is False:
             raise BotmuxError(f"role profile write failed: {payload}")
 
+    async def configure_bot(self, *, app_id: str, cli_id: str) -> None:
+        agent = await self._json("PUT", f"/api/bots/{app_id}/agent", json={"cliId": cli_id})
+        if agent.get("ok") is False:
+            raise BotmuxError(f"bot agent configuration failed: {agent}")
+        preferences = await self._json(
+            "PUT",
+            f"/api/bots/{app_id}/card-prefs",
+            # A native topic remains an independent persistent session.  In
+            # contrast, new-topic forks a session for every top-level mention.
+            json={"regularGroupReplyMode": "chat-topic"},
+        )
+        if preferences.get("ok") is False:
+            raise BotmuxError(f"bot topic configuration failed: {preferences}")
+        launch_shell = await self._json(
+            "PUT", f"/api/bots/{app_id}/launch-shell", json={"launchShell": "zsh"}
+        )
+        if launch_shell.get("ok") is False:
+            raise BotmuxError(f"bot launch shell configuration failed: {launch_shell}")
+
     async def create_group(
         self, *, name: str, app_ids: list[str], working_dir: str, profile_id: str
     ) -> str:
@@ -177,6 +205,41 @@ class BotmuxAdminClient:
         if payload.get("ok") is False or not chat_id:
             raise BotmuxError(f"group creation failed: {payload}")
         return chat_id
+
+    async def ensure_group_bots(self, *, chat_id: str, app_ids: list[str]) -> None:
+        payload = await self._json(
+            "POST", f"/api/groups/{chat_id}/add-bots", json={"larkAppIds": app_ids}
+        )
+        results = payload.get("result") or []
+        failed = [item for item in results if item.get("ok") is not True]
+        if failed:
+            raise BotmuxError(f"group membership reconciliation failed: {failed}")
+
+    async def leave_group_bots(self, *, chat_id: str, app_ids: list[str]) -> None:
+        if not app_ids:
+            return
+        payload = await self._json(
+            "POST", f"/api/groups/{chat_id}/leave", json={"larkAppIds": app_ids}
+        )
+        results = payload.get("result") or []
+        failed = [
+            item
+            for item in results
+            if item.get("ok") is not True and item.get("error") != "not_in_chat"
+        ]
+        if failed:
+            raise BotmuxError(f"removed bot group reconciliation failed: {failed}")
+
+    async def apply_role_profile(
+        self, *, profile_id: str, app_id: str, chat_id: str
+    ) -> None:
+        payload = await self._json(
+            "POST",
+            f"/api/role-profiles/{profile_id}/apply",
+            json={"chatId": chat_id, "larkAppId": app_id, "force": True, "preview": False},
+        )
+        if payload.get("ok") is False:
+            raise BotmuxError(f"role profile apply failed: {payload}")
 
     async def create_topic(
         self,
@@ -202,7 +265,6 @@ class BotmuxAdminClient:
                 },
                 "presentation": {"topicMessage": title[:200]},
                 "options": {
-                    "idempotencyKey": idempotency_key,
                     "asyncReturnSessionId": True,
                     "waitForFinalOutput": False,
                 },
@@ -245,17 +307,39 @@ class Provisioner:
         cli_id: str = "codex",
         name_prefix: str = "GE",
     ) -> WorkspaceProvisioning:
+        existing: WorkspaceProvisioning | None = None
         if self.storage is not None:
             await self.storage.initialize()
             existing = await self.storage.get_provisioning(config.workspace.id)
-            if existing is not None:
-                return existing
+        ordered_agents = ["organizer", *(key for key in config.agents if key != "organizer")]
         checkpoint_path = (
             self.control_dir / "workspaces" / config.workspace.id / "provision-checkpoint.json"
         )
-        checkpoint = self._load_checkpoint(checkpoint_path, config)
-        if checkpoint.get("provisioning"):
-            return WorkspaceProvisioning.model_validate(checkpoint["provisioning"])
+        checkpoint = self._load_checkpoint(
+            checkpoint_path,
+            config,
+            allow_new_version=existing is not None,
+        )
+        if existing is None and checkpoint.get("provisioning"):
+            existing = WorkspaceProvisioning.model_validate(checkpoint["provisioning"])
+        removed_bindings: list[SessionBinding] = []
+        if existing is not None:
+            checkpoint.setdefault("profile_id", existing.role_profile_id)
+            checkpoint.setdefault("chat_id", existing.chat_id)
+            checkpoint_apps = checkpoint.setdefault("apps", {})
+            checkpoint_topics = checkpoint.setdefault("topics", {})
+            for binding in existing.bindings:
+                if binding.agent_id not in ordered_agents:
+                    removed_bindings.append(binding)
+                    continue
+                checkpoint_apps.setdefault(binding.agent_id, binding.lark_app_id)
+                checkpoint_topics.setdefault(
+                    binding.agent_id,
+                    {
+                        "root_message_id": binding.root_message_id,
+                        "session_id": binding.session_id,
+                    },
+                )
         apps: dict[str, str] = checkpoint.setdefault("apps", {})
         profile_id = str(checkpoint.setdefault("profile_id", f"graph-{config.workspace.id}"))
         registry = (
@@ -264,7 +348,6 @@ class Provisioner:
             else WorkspaceRegistry(self.control_dir)
         )
 
-        ordered_agents = ["organizer", *(key for key in config.agents if key != "organizer")]
         for agent_id in ordered_agents:
             agent = config.agents[agent_id]
             if agent_id not in apps:
@@ -277,30 +360,58 @@ class Provisioner:
                 )
                 self._save_checkpoint(checkpoint_path, checkpoint)
 
+        configured: list[str] = checkpoint.setdefault("configured", [])
+        for agent_id in ordered_agents:
+            await self.admin.configure_bot(app_id=apps[agent_id], cli_id=cli_id)
+            if agent_id not in configured:
+                configured.append(agent_id)
+            self._save_checkpoint(checkpoint_path, checkpoint)
+
         profiled: list[str] = checkpoint.setdefault("profiled", [])
         diagram = registry.render_mermaid(config)
         for agent_id in ordered_agents:
             app_id = apps[agent_id]
-            if agent_id in profiled:
-                continue
             prompt = registry.render_agent_prompt(config, agent_id)
             if agent_id == "organizer":
                 prompt += (
                     f"\n\n当前冻结配置哈希：`{config.content_hash}`\n\n```mermaid\n{diagram}```"
                 )
             await self.admin.put_role_profile(profile_id, app_id, prompt)
-            profiled.append(agent_id)
+            if agent_id not in profiled:
+                profiled.append(agent_id)
             self._save_checkpoint(checkpoint_path, checkpoint)
 
         chat_id = str(checkpoint.get("chat_id") or "")
         if not chat_id:
             chat_id = await self.admin.create_group(
                 name=f"Graph Engineering · {config.workspace.name or config.workspace.id}"[:100],
-                app_ids=list(apps.values()),
+                app_ids=[apps[agent_id] for agent_id in ordered_agents],
                 working_dir=str(config.workspace.repository),
                 profile_id=profile_id,
             )
             checkpoint["chat_id"] = chat_id
+            self._save_checkpoint(checkpoint_path, checkpoint)
+
+        await self.admin.ensure_group_bots(
+            chat_id=chat_id,
+            app_ids=[apps[agent_id] for agent_id in ordered_agents],
+        )
+        await self.admin.leave_group_bots(
+            chat_id=chat_id,
+            app_ids=[binding.lark_app_id for binding in removed_bindings],
+        )
+        checkpoint["members_reconciled"] = True
+        self._save_checkpoint(checkpoint_path, checkpoint)
+
+        applied: list[str] = checkpoint.setdefault("profiles_applied", [])
+        for agent_id in ordered_agents:
+            await self.admin.apply_role_profile(
+                profile_id=profile_id,
+                app_id=apps[agent_id],
+                chat_id=chat_id,
+            )
+            if agent_id not in applied:
+                applied.append(agent_id)
             self._save_checkpoint(checkpoint_path, checkpoint)
 
         topics: dict[str, dict[str, str]] = checkpoint.setdefault("topics", {})
@@ -340,6 +451,7 @@ class Provisioner:
                 )
                 for agent_id in ordered_agents
             ],
+            created_at=existing.created_at if existing is not None else utc_now(),
         )
         if self.storage is not None:
             await self.storage.save_provisioning(provisioning)
@@ -349,7 +461,12 @@ class Provisioner:
         return provisioning
 
     @staticmethod
-    def _load_checkpoint(path: Path, config: WorkspaceConfig) -> dict[str, Any]:
+    def _load_checkpoint(
+        path: Path,
+        config: WorkspaceConfig,
+        *,
+        allow_new_version: bool = False,
+    ) -> dict[str, Any]:
         if not path.exists():
             return {"workspace_id": config.workspace.id, "config_hash": config.content_hash}
         try:
@@ -357,6 +474,11 @@ class Provisioner:
         except (OSError, json.JSONDecodeError) as exc:
             raise ConfigError(f"invalid provisioning checkpoint: {exc}") from exc
         if checkpoint.get("config_hash") != config.content_hash:
+            if allow_new_version:
+                return {
+                    "workspace_id": config.workspace.id,
+                    "config_hash": config.content_hash,
+                }
             raise ConfigError("provisioning checkpoint belongs to a different frozen configuration")
         return checkpoint
 

@@ -36,6 +36,7 @@ async def test_sqlite_persists_runtime_cursor_and_outbox(tmp_path: Path) -> None
     assert (await db.get_runtime("ws")).cursor == 17
     assert (await db.get_delivery("d1")).status == "pending"
     assert [item.delivery_id for item in await db.pending_deliveries("ws")] == ["d1"]
+    assert [item.delivery_id for item in await db.list_deliveries("ws")] == ["d1"]
 
     provisioning = WorkspaceProvisioning(
         workspace_id="ws",

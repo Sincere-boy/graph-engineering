@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import httpx
 import pytest
 
 from graph_engineering.config import WorkspaceConfig
-from graph_engineering.provisioner import Provisioner
+from graph_engineering.provisioner import BotmuxAdminClient, Provisioner
+from graph_engineering.storage import SQLiteStorage
 
 CONFIG = """
 schema_version: 1
@@ -36,8 +38,12 @@ class FakeAdmin:
         self.created: list[str] = []
         self.fail_after = fail_after
         self.profile_entries: dict[tuple[str, str], str] = {}
+        self.configured: list[str] = []
         self.groups = 0
         self.topics = 0
+        self.memberships = 0
+        self.applied: list[str] = []
+        self.left: list[str] = []
 
     async def create_bot(self, *, name: str, working_dir: str, cli_id: str) -> str:
         if self.fail_after is not None and len(self.created) >= self.fail_after:
@@ -49,11 +55,25 @@ class FakeAdmin:
     async def put_role_profile(self, profile_id: str, app_id: str, content: str) -> None:
         self.profile_entries[(profile_id, app_id)] = content
 
+    async def configure_bot(self, *, app_id: str, cli_id: str) -> None:
+        self.configured.append(f"{app_id}:{cli_id}")
+
     async def create_group(
         self, *, name: str, app_ids: list[str], working_dir: str, profile_id: str
     ) -> str:
         self.groups += 1
         return "chat-1"
+
+    async def ensure_group_bots(self, *, chat_id: str, app_ids: list[str]) -> None:
+        self.memberships += 1
+
+    async def leave_group_bots(self, *, chat_id: str, app_ids: list[str]) -> None:
+        self.left.extend(app_ids)
+
+    async def apply_role_profile(
+        self, *, profile_id: str, app_id: str, chat_id: str
+    ) -> None:
+        self.applied.append(app_id)
 
     async def create_topic(
         self, *, app_id: str, chat_id: str, title: str, instruction: str, idempotency_key: str
@@ -73,10 +93,80 @@ async def test_provision_is_idempotent_and_creates_one_topic_per_agent(tmp_path:
 
     assert first == second
     assert len(admin.created) == 2  # organizer is injected by the engine
+    # Safe settings are reconciled on every run, while resource creation is exactly once.
+    assert admin.configured == [
+        "app-0:codex",
+        "app-1:codex",
+        "app-0:codex",
+        "app-1:codex",
+    ]
     assert admin.groups == 1
+    assert admin.memberships == 2
+    assert admin.applied == ["app-0", "app-1", "app-0", "app-1"]
     assert admin.topics == 2
     assert {item.agent_id for item in first.bindings} == {"organizer", "developer"}
     assert "flowchart LR" in admin.profile_entries[(first.role_profile_id, "app-0")]
+
+
+@pytest.mark.asyncio
+async def test_reprovision_refreshes_fixed_topic_protocol_without_new_topics(
+    tmp_path: Path,
+) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+    admin = FakeAdmin()
+    provisioner = Provisioner(tmp_path, admin)
+
+    await provisioner.provision(config)
+    admin.profile_entries.clear()
+    await provisioner.provision(config)
+
+    assert admin.topics == 2
+    assert len(admin.profile_entries) == 2
+    assert all("禁止创建新话题" in prompt for prompt in admin.profile_entries.values())
+
+
+@pytest.mark.asyncio
+async def test_provision_keeps_declared_botmux_cli_selection(tmp_path: Path) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+    admin = FakeAdmin()
+
+    await Provisioner(tmp_path, admin).provision(config, cli_id="gemini")
+
+    assert admin.configured == ["app-0:gemini", "app-1:gemini"]
+
+
+@pytest.mark.asyncio
+async def test_new_config_version_reuses_topics_and_reconciles_removed_agents(
+    tmp_path: Path,
+) -> None:
+    first = WorkspaceConfig.from_yaml_text(CONFIG)
+    storage = SQLiteStorage(tmp_path / "state.db")
+    admin = FakeAdmin()
+    provisioner = Provisioner(tmp_path, admin, storage=storage)
+    original = await provisioner.provision(first)
+    second = WorkspaceConfig.from_yaml_text(
+        """
+schema_version: 1
+workspace:
+  id: provision-test
+  version: 2
+  repository: /tmp/worktree
+agents: {}
+states:
+  done:
+    display_name: Done
+    allowed_writers: [organizer]
+    action:
+      type: complete
+"""
+    )
+
+    updated = await provisioner.provision(second)
+
+    assert admin.topics == 2
+    assert [binding.agent_id for binding in updated.bindings] == ["organizer"]
+    assert updated.bindings[0].root_message_id == original.bindings[0].root_message_id
+    assert admin.left == ["app-1"]
 
 
 @pytest.mark.asyncio
@@ -93,3 +183,94 @@ async def test_provision_resumes_from_checkpoint_after_interruption(tmp_path: Pa
     assert len(first_admin.created) == 1
     assert len(second_admin.created) == 1
     assert len(result.bindings) == 2
+
+
+@pytest.mark.asyncio
+async def test_onboarding_uses_confirmed_session_without_managed_activation_gate() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/api/cli-options":
+            return httpx.Response(
+                200,
+                json={
+                    "webSession": {
+                        "status": "ready",
+                        "identity": {"userId": "user", "tenantId": "tenant"},
+                    }
+                },
+            )
+        if request.url.path == "/api/bot-onboarding/start":
+            return httpx.Response(202, json={"job": {"id": "job-1"}})
+        if request.url.path == "/api/bot-onboarding/job-1":
+            return httpx.Response(200, json={"job": {"status": "completed", "appId": "app-new"}})
+        if request.url.path == "/api/bots":
+            return httpx.Response(200, json={"bots": [{"larkAppId": "app-new", "online": True}]})
+        raise AssertionError(request.url.path)
+
+    client = BotmuxAdminClient(
+        "http://botmux.test", token="token", transport=httpx.MockTransport(handler)
+    )
+    app_id = await client.create_bot(name="new", working_dir="/tmp", cli_id="codex")
+    await client.close()
+
+    start = next(request for request in seen if request.url.path.endswith("/start"))
+    body = __import__("json").loads(start.content)
+    assert app_id == "app-new"
+    assert body["sessionMode"] == "reuse"
+    assert "requireCriticalScopesBeforeActivation" not in body
+
+
+@pytest.mark.asyncio
+async def test_group_topic_uses_checkpoint_idempotency_not_invalid_virtual_key() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "POST":
+            return httpx.Response(200, json={"target": {"sessionId": "session-new"}})
+        if request.url.path.endswith("/trigger-result"):
+            return httpx.Response(200, json={"state": "completed", "output": {"content": "ok"}})
+        if request.url.path == "/api/sessions":
+            return httpx.Response(
+                200,
+                json={"sessions": [{"sessionId": "session-new", "rootMessageId": "root-new"}]},
+            )
+        raise AssertionError(request.url.path)
+
+    client = BotmuxAdminClient(
+        "http://botmux.test", token="token", transport=httpx.MockTransport(handler)
+    )
+    root, session = await client.create_topic(
+        app_id="app",
+        chat_id="chat",
+        title="topic",
+        instruction="initialize",
+        idempotency_key="checkpoint-key",
+    )
+    await client.close()
+
+    body = __import__("json").loads(seen[0].content)
+    assert (root, session) == ("root-new", "session-new")
+    assert body["target"]["chatId"] == "chat"
+    assert "idempotencyKey" not in body["options"]
+
+
+@pytest.mark.asyncio
+async def test_bot_configuration_disables_per_mention_topic_forks() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    client = BotmuxAdminClient(
+        "http://botmux.test", token="token", transport=httpx.MockTransport(handler)
+    )
+    await client.configure_bot(app_id="app", cli_id="codex")
+    await client.close()
+
+    prefs = next(request for request in seen if request.url.path.endswith("/card-prefs"))
+    body = __import__("json").loads(prefs.content)
+    assert body["regularGroupReplyMode"] == "chat-topic"

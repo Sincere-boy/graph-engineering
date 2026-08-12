@@ -9,10 +9,9 @@ Environment=GE_MONGO_URI=mongodb://127.0.0.1:27017
 Environment=GE_MONGO_DATABASE=graph_engineering
 Environment=GE_API_HOST=127.0.0.1
 Environment=GE_API_PORT=8765
-ExecStart=/home/zhangjianpeng.hello/.graph_engineering/miniconda3/envs/graph-engineering/bin/graphctl service run --control-dir /home/zhangjianpeng.hello/.graph_engineering
+ExecStart=%h/.graph_engineering/miniconda3/envs/graph-engineering/bin/graphctl service run --control-dir %h/.graph_engineering
 Restart=on-failure
 RestartSec=3
 
 [Install]
 WantedBy=default.target
-

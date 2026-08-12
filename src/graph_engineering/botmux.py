@@ -21,8 +21,8 @@ class BotmuxClient:
         *,
         token: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
-        poll_interval: float = 0.05,
-        max_polls: int = 100,
+        poll_interval: float = 2,
+        max_polls: int = 900,
     ):
         cookies = {"botmux_dashboard_token": token} if token else None
         self.client = httpx.AsyncClient(

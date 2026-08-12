@@ -70,3 +70,12 @@ def test_config_requires_terminal_state(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="terminal"):
         WorkspaceConfig.model_validate(raw)
+
+
+def test_config_yaml_roundtrip_preserves_organizer_protocol_and_hash(tmp_path: Path) -> None:
+    first = WorkspaceConfig.model_validate(valid_config(tmp_path))
+
+    second = WorkspaceConfig.from_yaml_text(first.to_yaml())
+
+    assert second.content_hash == first.content_hash
+    assert second.agents["organizer"].prompt.count("你是声明式工程状态图的组织者") == 1

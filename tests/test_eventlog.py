@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_engineering.eventlog import EventLog, EventLogCorrupt
+from graph_engineering.eventlog import EventLog, EventLogConflict, EventLogCorrupt
 from graph_engineering.models import Event
 
 
@@ -37,6 +37,17 @@ def test_eventlog_rejects_duplicate_event_ids(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="duplicate"):
         log.append(event("same"))
+
+
+def test_eventlog_compare_and_append_rejects_a_stale_validated_cursor(tmp_path: Path) -> None:
+    log = EventLog(tmp_path / "eventlog.jsonl")
+    validated_cursor = log.append(event("first"))
+    log.append(event("concurrent"))
+
+    with pytest.raises(EventLogConflict, match="changed after validation"):
+        log.append(event("stale-writer"), expected_cursor=validated_cursor)
+
+    assert [item.event_id for item in log.read_from(0)[0]] == ["first", "concurrent"]
 
 
 def test_eventlog_fails_closed_on_truncated_or_invalid_json(tmp_path: Path) -> None:

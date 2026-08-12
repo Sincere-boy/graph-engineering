@@ -58,6 +58,7 @@ class WorkspaceProcessor:
         engine = StateGraphEngine(config)
         all_events, _ = event_log.read_from(0)
         lookup = {event.event_id: event for event in all_events}
+        active_node = runtime.active_node
         while index < len(entries):
             state_id = entries[index][0].state_id
             batch: list[tuple[Event, int]] = []
@@ -66,7 +67,11 @@ class WorkspaceProcessor:
                 index += 1
             events = [event for event, _ in batch]
             try:
-                decision = engine.decide(events, event_lookup=lookup)
+                decision = engine.decide(
+                    events,
+                    event_lookup=lookup,
+                    expected_active_node=active_node,
+                )
             except (ValueError, KeyError) as exc:
                 runtime.status = "unhealthy"
                 runtime.health = "invalid_event"
@@ -96,6 +101,7 @@ class WorkspaceProcessor:
 
             runtime.cursor = batch[-1][1]
             runtime.active_node = decision.active_node
+            active_node = decision.active_node
             runtime.last_error = None
             runtime.health = "unknown"
             runtime.status = {
@@ -119,7 +125,9 @@ class WorkspaceProcessor:
                 delivery.model_copy(deep=True), decision, events, config
             )
             delivery.status = "delivered"
-            delivery.detail = detail
+            delivery.message_id = detail
+            delivery.reconciliation_source = "organizer_receipt"
+            delivery.detail = "organizer returned a confirmed visible message id"
         except DeliveryUncertain as exc:
             delivery.status = "needs_reconcile"
             delivery.detail = str(exc)

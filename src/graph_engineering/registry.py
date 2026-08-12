@@ -48,6 +48,18 @@ class WorkspaceRegistry:
         snapshot = directory / f"config-v{config.workspace.version}.yaml"
         if snapshot.exists() and snapshot.read_text(encoding="utf-8") != config.to_yaml():
             raise ConfigError(f"configuration version {config.workspace.version} is already frozen")
+        event_log = self.event_log(workspace_id)
+        cursor = 0
+        event_log_identity = None
+        if current is not None:
+            # A new frozen version starts after every record from the previous
+            # version.  Rewinding to zero would reinterpret history with the new graph.
+            event_log_identity = event_log.file_identity()
+            entries = event_log.read_entries_from(
+                0,
+                expected_identity=event_log_identity,
+            )
+            cursor = entries[-1][1] if entries else 0
         self._atomic_write(snapshot, config.to_yaml())
         self._atomic_write(directory / "workspace.yaml", config.to_yaml())
         runtime = WorkspaceRuntime(
@@ -55,7 +67,8 @@ class WorkspaceRegistry:
             config_version=config.workspace.version,
             config_hash=config.content_hash,
             status="registered" if current is None else "paused",
-            cursor=0,
+            cursor=cursor,
+            event_log_identity=event_log_identity,
         )
         await self.storage.save_runtime(runtime)
         return runtime
@@ -71,8 +84,8 @@ class WorkspaceRegistry:
         runtime = await self.storage.get_runtime(workspace_id)
         if runtime is None:
             raise ConfigError(f"unknown workspace: {workspace_id}")
-        if runtime.status == "completed" and status == "running":
-            raise ConfigError("completed workspace cannot be resumed")
+        if runtime.status == "completed":
+            raise ConfigError("completed workspace cannot be paused or resumed")
         runtime.status = status
         runtime.last_error = None
         await self.storage.save_runtime(runtime)
@@ -119,9 +132,12 @@ class WorkspaceRegistry:
             if agent_id in state.allowed_writers
         ]
         state_lines = "\n".join(f"- `{state_id}`：{name}" for state_id, name in writable)
+        skill_lines = "\n".join(f"- `{skill}`" for skill in agent.skills)
         return (
             f"# 角色：{agent.display_name}\n\n{agent.prompt}\n\n"
             f"工作区：`{config.workspace.id}`\n"
+            "配置的 Skills（存在且适用时必须使用）：\n"
+            f"{skill_lines or '- 无'}\n\n"
             "完成一个语义步骤后只能写入你有权写的状态：\n"
             f"{state_lines or '- 无普通状态写权限'}\n\n"
             "写入命令：\n"
@@ -129,7 +145,10 @@ class WorkspaceRegistry:
             f"graphctl event append {config.workspace.id} --actor {agent_id} "
             "--state <state_id> --message '<summary>'\n"
             "```\n"
-            "需要人工决定时写 `human_required`；不要自行假设人工答案。"
+            "需要人工决定时写 `human_required`；不要自行假设人工答案。\n\n"
+            "通讯协议：初始化后始终在当前固定话题内协作，禁止创建新话题。"
+            "禁止使用 `botmux report`、`botmux dispatch --title` 或顶层消息回报；"
+            "完成、失败与返工只通过上述 `graphctl event append` 写入状态事件。"
         )
 
     @staticmethod

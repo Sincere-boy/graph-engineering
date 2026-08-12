@@ -71,6 +71,8 @@ async def test_dispatcher_uses_organizer_session_and_declared_target(tmp_path: P
     assert call["session_id"] == "s_org"
     assert "om_check" in call["instruction"]
     assert "cli_check" in call["instruction"]
+    assert "禁止 `botmux report`" in call["instruction"]
+    assert "禁止带 `--title`" in call["instruction"]
     assert (
         '只输出单行 JSON：{"delivery_id":"d1","message_id":"<botmux返回的消息ID>"}。'
         in call["instruction"]
@@ -123,3 +125,9 @@ async def test_dispatcher_treats_invalid_organizer_receipt_as_uncertain(tmp_path
         await BotmuxDispatcher(FakeBotmux("done maybe"), lambda _: provisioning).dispatch(
             delivery, decision, [event], config
         )
+
+    with pytest.raises(DeliveryUncertain, match="message id"):
+        await BotmuxDispatcher(
+            FakeBotmux('{"delivery_id":"d1","message_id":"not-a-feishu-message"}'),
+            lambda _: provisioning,
+        ).dispatch(delivery, decision, [event], config)

@@ -11,8 +11,8 @@ import typer
 
 from graph_engineering.config import ConfigError, WorkspaceConfig
 from graph_engineering.config_builder import config_from_markdown
-from graph_engineering.engine import StateGraphEngine
-from graph_engineering.models import Event
+from graph_engineering.engine import StateGraphEngine, aggregate_consecutive
+from graph_engineering.models import Event, utc_now
 from graph_engineering.provisioner import BotmuxAdminClient, Provisioner
 from graph_engineering.registry import WorkspaceRegistry
 from graph_engineering.storage import storage_from_environment
@@ -23,10 +23,12 @@ app = typer.Typer(help="Declarative engineering state graph control plane.")
 config_app = typer.Typer(help="Validate and inspect workspace configuration.")
 workspace_app = typer.Typer(help="Register and control workspaces.")
 event_app = typer.Typer(help="Append authorized state events.")
+delivery_app = typer.Typer(help="Inspect and reconcile external delivery results.")
 service_app = typer.Typer(help="Run the graph-engineering service.")
 app.add_typer(config_app, name="config")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(event_app, name="event")
+app.add_typer(delivery_app, name="delivery")
 app.add_typer(service_app, name="service")
 
 
@@ -179,7 +181,7 @@ def workspace_diagram(
 def provision_workspace(
     workspace_id: str,
     control_dir: ControlDir = DEFAULT_CONTROL_DIR,
-    cli_id: Annotated[str, typer.Option(help="botmux CLI selection id")] = "aiden-x-codex",
+    cli_id: Annotated[str, typer.Option(help="botmux onboarding CLI selection id")] = "codex",
     name_prefix: Annotated[str, typer.Option(help="New Feishu application name prefix")] = "GE",
 ) -> None:
     async def provision() -> object:
@@ -231,11 +233,32 @@ def append_event(
             message=message,
             causation_id=causation_id,
         )
-        all_events, _ = registry.event_log(workspace_id).read_from(0)
-        StateGraphEngine(config).decide(
-            [item], event_lookup={existing.event_id: existing for existing in all_events}
+        event_log = registry.event_log(workspace_id)
+        pending_entries = event_log.read_entries_from(
+            runtime.cursor,
+            expected_identity=runtime.event_log_identity,
         )
-        cursor = registry.event_log(workspace_id).append(item)
+        pending_events = [existing for existing, _ in pending_entries]
+        validated_cursor = pending_entries[-1][1] if pending_entries else runtime.cursor
+        all_events = [
+            existing
+            for existing, _ in event_log.read_entries_from(
+                0,
+                expected_identity=runtime.event_log_identity,
+            )
+        ]
+        engine = StateGraphEngine(config)
+        lookup = {existing.event_id: existing for existing in all_events}
+        active_node = runtime.active_node
+        last_action: str | None = None
+        for batch in aggregate_consecutive(pending_events):
+            decision = engine.decide(batch, event_lookup=lookup, expected_active_node=active_node)
+            active_node = decision.active_node
+            last_action = decision.action
+        if last_action in {"pause", "complete"}:
+            raise ConfigError(f"event log already reached terminal action {last_action}")
+        engine.decide([item], event_lookup=lookup, expected_active_node=active_node)
+        cursor = event_log.append(item, expected_cursor=validated_cursor)
         return item, cursor
 
     try:
@@ -243,6 +266,69 @@ def append_event(
     except Exception as exc:
         _fail(exc)
     typer.echo(json.dumps({"event_id": item.event_id, "cursor": cursor}))
+
+
+@delivery_app.command("list")
+def list_deliveries(
+    workspace_id: str,
+    control_dir: ControlDir = DEFAULT_CONTROL_DIR,
+) -> None:
+    async def load():
+        registry = _registry(control_dir)
+        await registry._initialize()
+        return await registry.storage.list_deliveries(workspace_id)
+
+    try:
+        deliveries = _run(load())
+    except Exception as exc:
+        _fail(exc)
+    typer.echo(
+        json.dumps(
+            [delivery.model_dump(mode="json") for delivery in deliveries],
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@delivery_app.command("reconcile")
+def reconcile_delivery(
+    delivery_id: str,
+    message_id: Annotated[str, typer.Option(help="Existing Feishu om_ message evidence")],
+    evidence_note: Annotated[
+        str | None, typer.Option(help="Concise operator verification note")
+    ] = None,
+    control_dir: ControlDir = DEFAULT_CONTROL_DIR,
+) -> None:
+    async def reconcile():
+        if not message_id.startswith("om_") or len(message_id) < 6:
+            raise ConfigError("message evidence must be an existing Feishu om_ message id")
+        if evidence_note is not None and len(evidence_note) > 1000:
+            raise ConfigError("evidence note must not exceed 1000 characters")
+        registry = _registry(control_dir)
+        await registry._initialize()
+        delivery = await registry.storage.get_delivery(delivery_id)
+        if delivery is None:
+            raise ConfigError(f"unknown delivery: {delivery_id}")
+        if delivery.status not in {"pending", "needs_reconcile"}:
+            raise ConfigError(
+                f"delivery {delivery_id} is {delivery.status}; only ambiguous results can reconcile"
+            )
+        delivery.status = "delivered"
+        delivery.message_id = message_id
+        delivery.reconciliation_source = "operator_evidence"
+        delivery.detail = evidence_note or (
+            "reconciled from an existing Feishu message; no resend performed"
+        )
+        delivery.updated_at = utc_now()
+        await registry.storage.save_delivery(delivery)
+        return delivery
+
+    try:
+        delivery = _run(reconcile())
+    except Exception as exc:
+        _fail(exc)
+    typer.echo(delivery.model_dump_json())
 
 
 @service_app.command("run")

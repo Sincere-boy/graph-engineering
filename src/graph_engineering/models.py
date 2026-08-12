@@ -48,6 +48,8 @@ class Delivery(BaseModel):
     event_ids: list[str]
     target_agent: str | None = None
     status: Literal["pending", "delivered", "failed", "needs_reconcile"]
+    message_id: str | None = None
+    reconciliation_source: Literal["organizer_receipt", "operator_evidence"] | None = None
     detail: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

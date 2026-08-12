@@ -72,17 +72,21 @@ class RuntimeService:
         except Exception as exc:
             for runtime in await self.storage.list_runtimes():
                 if runtime.status not in {"completed"}:
-                    runtime.health = "degraded"
-                    runtime.last_error = f"botmux health read failed: {exc}"
-                    await self.storage.save_runtime(runtime)
+                    new_error = f"botmux health read failed: {exc}"
+                    if runtime.health != "degraded" or runtime.last_error != new_error:
+                        runtime.health = "degraded"
+                        runtime.last_error = new_error
+                        await self.storage.save_runtime(runtime)
             return
         for runtime in await self.storage.list_runtimes():
             provisioning = await self.storage.get_provisioning(runtime.workspace_id)
             if provisioning is None:
                 if runtime.status == "running":
-                    runtime.health = "degraded"
-                    runtime.last_error = "workspace has no botmux provisioning record"
-                    await self.storage.save_runtime(runtime)
+                    new_error = "workspace has no botmux provisioning record"
+                    if runtime.health != "degraded" or runtime.last_error != new_error:
+                        runtime.health = "degraded"
+                        runtime.last_error = new_error
+                        await self.storage.save_runtime(runtime)
                 continue
             config = self.registry.load_config(runtime.workspace_id)
             result = evaluate_workspace_health(
@@ -91,10 +95,11 @@ class RuntimeService:
                 sessions,
                 expected_repository=str(config.workspace.repository),
             )
-            changed = runtime.health != result.status
+            new_error = "; ".join(result.reasons) or None
+            changed = runtime.health != result.status or runtime.last_error != new_error
             runtime.health = result.status
-            runtime.last_error = "; ".join(result.reasons) or None
-            if changed or runtime.last_error:
+            runtime.last_error = new_error
+            if changed:
                 await self.storage.save_runtime(runtime)
 
     async def run(self) -> None:
