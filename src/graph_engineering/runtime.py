@@ -148,9 +148,6 @@ class RuntimeService:
         status = str(session.get("status", "")).lower()
         if status in {"isolated", "quarantined", "failed"} or session_is_working(session):
             return None
-        stalled_for = (utc_now() - runtime.updated_at).total_seconds()
-        if stalled_for < self.stall_grace_seconds:
-            return None
 
         event_log = self.registry.event_log(runtime.workspace_id)
         pending = event_log.read_entries_from(
@@ -163,6 +160,12 @@ class RuntimeService:
             0,
             expected_identity=runtime.event_log_identity,
         )
+        last_progress_at = runtime.updated_at
+        if all_entries:
+            last_progress_at = max(last_progress_at, all_entries[-1][0].created_at)
+        stalled_for = (utc_now() - last_progress_at).total_seconds()
+        if stalled_for < self.stall_grace_seconds:
+            return None
         recent_events = [event for event, _ in all_entries[-5:]]
         recoveries = sorted(
             (

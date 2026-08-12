@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ from test_config import valid_config
 
 from graph_engineering.config import WorkspaceConfig
 from graph_engineering.eventlog import EventLog
-from graph_engineering.models import Event, SessionBinding, WorkspaceProvisioning
+from graph_engineering.models import Event, SessionBinding, WorkspaceProvisioning, utc_now
 from graph_engineering.registry import WorkspaceRegistry
 from graph_engineering.runtime import RuntimeService
 from graph_engineering.storage import SQLiteStorage
@@ -343,5 +344,74 @@ async def test_runtime_does_not_recover_working_agent_or_when_event_is_pending(
         )
     )
     await service.health_once()
+
+    assert dispatcher.recoveries == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_stall_grace_uses_last_consumed_event_time(tmp_path: Path) -> None:
+    storage = SQLiteStorage(tmp_path / "control/state.db")
+    registry = WorkspaceRegistry(tmp_path / "control", storage)
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    runtime = await registry.register(config)
+    runtime.status = "running"
+    runtime.active_node = "maker"
+    runtime.updated_at = utc_now() - timedelta(hours=1)
+    event_log = registry.event_log(config.workspace.id)
+    cursor = event_log.append(
+        Event(
+            event_id="recent-progress",
+            workspace_id=config.workspace.id,
+            config_version=1,
+            actor_id="organizer",
+            state_id="begin",
+            message="recently activated maker",
+        )
+    )
+    runtime.cursor = cursor
+    runtime.event_log_identity = event_log.file_identity()
+    await storage.save_runtime(runtime)
+    await storage.save_provisioning(
+        WorkspaceProvisioning(
+            workspace_id=config.workspace.id,
+            role_profile_id="p1",
+            chat_id="oc1",
+            bindings=[
+                SessionBinding(
+                    agent_id="organizer",
+                    lark_app_id="cli-org",
+                    chat_id="oc1",
+                    root_message_id="om-org",
+                    session_id="s-org",
+                ),
+                SessionBinding(
+                    agent_id="maker",
+                    lark_app_id="cli-maker",
+                    chat_id="oc1",
+                    root_message_id="om-maker",
+                    session_id="s-maker",
+                ),
+            ],
+        )
+    )
+
+    class IdleDashboard(Dashboard):
+        async def sessions(self):
+            return [
+                {"sessionId": "s-org", "status": "idle", "workingDir": self.repository},
+                {"sessionId": "s-maker", "status": "idle", "workingDir": self.repository},
+            ]
+
+    dispatcher = Dispatcher()
+    dashboard = IdleDashboard()
+    dashboard.repository = str(config.workspace.repository)
+
+    await RuntimeService(
+        registry,
+        storage,
+        dispatcher,
+        dashboard,
+        stall_grace_seconds=300,
+    ).health_once()
 
     assert dispatcher.recoveries == []
