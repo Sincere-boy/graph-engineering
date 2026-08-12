@@ -12,6 +12,13 @@ class HealthResult(BaseModel):
     reasons: list[str]
 
 
+def session_is_working(session: dict) -> bool:
+    status = str(session.get("status", "")).lower()
+    return status in {"working", "busy", "running"} or bool(
+        session.get("working") or session.get("busy") or session.get("isWorking")
+    )
+
+
 def evaluate_workspace_health(
     bindings: list[SessionBinding],
     summary: dict,

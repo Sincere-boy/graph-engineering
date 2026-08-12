@@ -7,7 +7,7 @@ from pathlib import Path
 
 from graph_engineering.config import ConfigError, WorkspaceConfig
 from graph_engineering.eventlog import EventLog
-from graph_engineering.models import WorkspaceRuntime
+from graph_engineering.models import WorkspaceRuntime, utc_now
 from graph_engineering.storage import SQLiteStorage, Storage
 
 
@@ -88,6 +88,7 @@ class WorkspaceRegistry:
             raise ConfigError("completed workspace cannot be paused or resumed")
         runtime.status = status
         runtime.last_error = None
+        runtime.updated_at = utc_now()
         await self.storage.save_runtime(runtime)
         return runtime
 

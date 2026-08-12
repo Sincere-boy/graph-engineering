@@ -48,6 +48,9 @@ class Delivery(BaseModel):
     event_ids: list[str]
     target_agent: str | None = None
     status: Literal["pending", "delivered", "failed", "needs_reconcile"]
+    kind: Literal["workflow", "recovery"] = "workflow"
+    source_cursor: int | None = Field(default=None, ge=0)
+    attempt: int | None = Field(default=None, ge=1)
     message_id: str | None = None
     reconciliation_source: Literal["organizer_receipt", "operator_evidence"] | None = None
     detail: str | None = None

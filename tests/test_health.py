@@ -1,6 +1,6 @@
 import pytest
 
-from graph_engineering.health import evaluate_workspace_health
+from graph_engineering.health import evaluate_workspace_health, session_is_working
 from graph_engineering.models import SessionBinding
 
 
@@ -125,3 +125,16 @@ def test_health_allows_companion_session_inside_registered_topic() -> None:
     )
 
     assert result.status == "healthy"
+
+
+@pytest.mark.parametrize(
+    ("session", "expected"),
+    [
+        ({"status": "working"}, True),
+        ({"status": "idle", "busy": True}, True),
+        ({"status": "ready"}, False),
+        ({"status": "idle", "tuiPromptActive": True}, False),
+    ],
+)
+def test_session_working_signal_is_explicit(session: dict, expected: bool) -> None:
+    assert session_is_working(session) is expected

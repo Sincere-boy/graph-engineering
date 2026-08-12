@@ -21,6 +21,14 @@ class Dispatcher(Protocol):
         config: WorkspaceConfig,
     ) -> str: ...
 
+    async def recover(
+        self,
+        delivery: Delivery,
+        active_agent: str,
+        recent_events: Sequence[Event],
+        config: WorkspaceConfig,
+    ) -> str: ...
+
 
 class WorkspaceProcessor:
     def __init__(self, storage: Storage, dispatcher: Dispatcher):
@@ -104,6 +112,7 @@ class WorkspaceProcessor:
             active_node = decision.active_node
             runtime.last_error = None
             runtime.health = "unknown"
+            runtime.updated_at = utc_now()
             runtime.status = {
                 "activate": "running",
                 "pause": "paused",

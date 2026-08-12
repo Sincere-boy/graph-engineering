@@ -16,6 +16,9 @@
 - outbox 意图先于外部投递持久化；结果不明确时进入 `needs_reconcile`，不盲目重发。
 - 健康检查会把同一工作区机器人产生的未登记活跃 session 标记为
   `needs_attention`，用于发现固定话题协议被破坏。
+- 卡死 watchdog 会在工作区仍为 `running`、活跃 Agent 的登记 session 已停止工作、
+  Event Log 在宽限期内无推进时调用组织者进入异常恢复模式。组织者收到最近 5 条事件，
+  只能在该 Agent 的固定话题催其从中断处继续；恢复投递持久化、幂等、带冷却且最多 3 次。
 - MongoDB 是默认存储；SQLite 只能通过 `GE_STORAGE_BACKEND=sqlite` 显式选择。
 - 业务仓库不保存引擎运行态；配置快照、Event Log 与 checkpoint 位于
   `~/.graph_engineering/workspaces/<workspace_id>/`。
@@ -72,6 +75,10 @@ graphctl event append passive-qa-e2e \
 ```bash
 graphctl delivery reconcile <delivery_id> --message-id <om_xxx>
 ```
+
+watchdog 默认等待 300 秒，每次恢复后冷却 300 秒，最多尝试 3 次。可通过
+`GE_STALL_GRACE_SECONDS`、`GE_RECOVERY_COOLDOWN_SECONDS`、
+`GE_RECOVERY_MAX_ATTEMPTS` 调整；不确定投递会停在 `needs_reconcile`，不会自动重发。
 
 ## 开发验证
 
