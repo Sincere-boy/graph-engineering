@@ -133,6 +133,12 @@ class WorkspaceRegistry:
         ]
         state_lines = "\n".join(f"- `{state_id}`：{name}" for state_id, name in writable)
         skill_lines = "\n".join(f"- `{skill}`" for skill in agent.skills)
+        restart_protocol = (
+            "\n\n工作区处于 completed 时，你可以通过上述命令写入一个配置允许组织者写入的 "
+            "activate 状态来开始新一轮；目标仍由该状态的 action 决定。"
+            if agent_id == "organizer"
+            else ""
+        )
         return (
             f"# 角色：{agent.display_name}\n\n{agent.prompt}\n\n"
             f"工作区：`{config.workspace.id}`\n"
@@ -149,6 +155,7 @@ class WorkspaceRegistry:
             "通讯协议：初始化后始终在当前固定话题内协作，禁止创建新话题。"
             "禁止使用 `botmux report`、`botmux dispatch --title` 或顶层消息回报；"
             "完成、失败与返工只通过上述 `graphctl event append` 写入状态事件。"
+            f"{restart_protocol}"
         )
 
     @staticmethod

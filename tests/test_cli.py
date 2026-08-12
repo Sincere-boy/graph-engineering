@@ -170,6 +170,139 @@ def test_cli_rejects_event_after_queued_terminal_event(tmp_path: Path) -> None:
     assert "terminal" in trailing.stderr
 
 
+def test_cli_organizer_activate_event_resumes_completed_workspace(tmp_path: Path) -> None:
+    config_path = tmp_path / "workspace.yaml"
+    config_path.write_text(
+        yaml.safe_dump(valid_config(tmp_path), allow_unicode=True), encoding="utf-8"
+    )
+    control = tmp_path / "control"
+    runner.invoke(
+        app,
+        ["workspace", "register", str(config_path), "--control-dir", str(control)],
+        env=SQLITE_ENV,
+    )
+    storage = SQLiteStorage(control / "state.db")
+
+    async def complete() -> None:
+        await storage.initialize()
+        runtime = await storage.get_runtime("arbitrary-flow")
+        runtime.status = "completed"
+        runtime.active_node = None
+        await storage.save_runtime(runtime)
+
+    asyncio.run(complete())
+
+    result = runner.invoke(
+        app,
+        [
+            "event",
+            "append",
+            "arbitrary-flow",
+            "--actor",
+            "organizer",
+            "--state",
+            "begin",
+            "--message",
+            "start another task",
+            "--control-dir",
+            str(control),
+        ],
+        env=SQLITE_ENV,
+    )
+    runtime = asyncio.run(storage.get_runtime("arbitrary-flow"))
+
+    assert result.exit_code == 0
+    assert runtime.status == "running"
+    assert runtime.active_node is None
+    assert len(EventLog(control / "workspaces/arbitrary-flow/eventlog.jsonl").read_from(0)[0]) == 1
+
+
+def test_cli_workspace_resume_records_configured_organizer_event(tmp_path: Path) -> None:
+    config_path = tmp_path / "workspace.yaml"
+    config_path.write_text(
+        yaml.safe_dump(valid_config(tmp_path), allow_unicode=True), encoding="utf-8"
+    )
+    control = tmp_path / "control"
+    runner.invoke(
+        app,
+        ["workspace", "register", str(config_path), "--control-dir", str(control)],
+        env=SQLITE_ENV,
+    )
+    storage = SQLiteStorage(control / "state.db")
+
+    async def complete() -> None:
+        await storage.initialize()
+        runtime = await storage.get_runtime("arbitrary-flow")
+        runtime.status = "completed"
+        await storage.save_runtime(runtime)
+
+    asyncio.run(complete())
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "resume",
+            "arbitrary-flow",
+            "--state",
+            "begin",
+            "--message",
+            "start another task",
+            "--control-dir",
+            str(control),
+        ],
+        env=SQLITE_ENV,
+    )
+    events, _ = EventLog(control / "workspaces/arbitrary-flow/eventlog.jsonl").read_from(0)
+
+    assert result.exit_code == 0
+    assert events[0].actor_id == "organizer"
+    assert events[0].state_id == "begin"
+    assert asyncio.run(storage.get_runtime("arbitrary-flow")).status == "running"
+
+
+def test_cli_completed_workspace_rejects_non_organizer_restart_event(tmp_path: Path) -> None:
+    config_path = tmp_path / "workspace.yaml"
+    config_path.write_text(
+        yaml.safe_dump(valid_config(tmp_path), allow_unicode=True), encoding="utf-8"
+    )
+    control = tmp_path / "control"
+    runner.invoke(
+        app,
+        ["workspace", "register", str(config_path), "--control-dir", str(control)],
+        env=SQLITE_ENV,
+    )
+    storage = SQLiteStorage(control / "state.db")
+
+    async def complete() -> None:
+        await storage.initialize()
+        runtime = await storage.get_runtime("arbitrary-flow")
+        runtime.status = "completed"
+        await storage.save_runtime(runtime)
+
+    asyncio.run(complete())
+    result = runner.invoke(
+        app,
+        [
+            "event",
+            "append",
+            "arbitrary-flow",
+            "--actor",
+            "maker",
+            "--state",
+            "inspect",
+            "--message",
+            "not allowed to restart",
+            "--control-dir",
+            str(control),
+        ],
+        env=SQLITE_ENV,
+    )
+
+    assert result.exit_code != 0
+    assert "organizer" in result.stderr
+    assert not (control / "workspaces/arbitrary-flow/eventlog.jsonl").exists()
+
+
 def test_cli_rejects_event_from_inactive_writer(tmp_path: Path) -> None:
     config_path = tmp_path / "workspace.yaml"
     config_path.write_text(

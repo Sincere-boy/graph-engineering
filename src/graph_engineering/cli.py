@@ -66,6 +66,91 @@ def _fail(exc: Exception) -> None:
     raise typer.Exit(code=2)
 
 
+async def _append_workspace_event(
+    registry: WorkspaceRegistry,
+    workspace_id: str,
+    *,
+    actor: str,
+    state: str,
+    message: str,
+    causation_id: str | None = None,
+    event_id: str | None = None,
+) -> tuple[Event, int]:
+    await registry._initialize()
+    config = registry.load_config(workspace_id)
+    runtime = await registry.storage.get_runtime(workspace_id)
+    if runtime is None or runtime.status not in {"running", "completed"}:
+        raise ConfigError("workspace must be running before appending events")
+    item = Event(
+        event_id=event_id or str(uuid.uuid4()),
+        workspace_id=workspace_id,
+        config_version=config.workspace.version,
+        actor_id=actor,
+        state_id=state,
+        message=message,
+        causation_id=causation_id,
+    )
+    event_log = registry.event_log(workspace_id)
+    engine = StateGraphEngine(config)
+
+    if runtime.status == "completed":
+        restart_state = config.states.get(state)
+        if actor != "organizer":
+            raise ConfigError("only organizer may restart a completed workspace")
+        if (
+            restart_state is None
+            or restart_state.action.type != "activate"
+            or actor not in restart_state.allowed_writers
+        ):
+            raise ConfigError(
+                "completed workspace restart requires an organizer-writable activate state"
+            )
+        engine.decide([item], expected_active_node=None)
+        existing_entries = event_log.read_entries_from(
+            0,
+            expected_identity=runtime.event_log_identity,
+        )
+        validated_cursor = existing_entries[-1][1] if existing_entries else 0
+        cursor = event_log.append(item, expected_cursor=validated_cursor)
+        # The new organizer event is the first record of the resumed run. Any
+        # historical post-terminal records remain immutable audit evidence but
+        # cannot influence the new run.
+        runtime.cursor = validated_cursor
+        runtime.status = "running"
+        runtime.active_node = None
+        runtime.health = "unknown"
+        runtime.last_error = None
+        runtime.updated_at = utc_now()
+        await registry.storage.save_runtime(runtime)
+        return item, cursor
+
+    pending_entries = event_log.read_entries_from(
+        runtime.cursor,
+        expected_identity=runtime.event_log_identity,
+    )
+    pending_events = [existing for existing, _ in pending_entries]
+    validated_cursor = pending_entries[-1][1] if pending_entries else runtime.cursor
+    all_events = [
+        existing
+        for existing, _ in event_log.read_entries_from(
+            0,
+            expected_identity=runtime.event_log_identity,
+        )
+    ]
+    lookup = {existing.event_id: existing for existing in all_events}
+    active_node = runtime.active_node
+    last_action: str | None = None
+    for batch in aggregate_consecutive(pending_events):
+        decision = engine.decide(batch, event_lookup=lookup, expected_active_node=active_node)
+        active_node = decision.active_node
+        last_action = decision.action
+    if last_action in {"pause", "complete"}:
+        raise ConfigError(f"event log already reached terminal action {last_action}")
+    engine.decide([item], event_lookup=lookup, expected_active_node=active_node)
+    cursor = event_log.append(item, expected_cursor=validated_cursor)
+    return item, cursor
+
+
 @config_app.command("validate")
 def validate_config(path: Path) -> None:
     try:
@@ -137,13 +222,57 @@ def pause_workspace(
 @workspace_app.command("resume")
 def resume_workspace(
     workspace_id: str,
+    state: Annotated[
+        str | None,
+        typer.Option(help="Organizer-writable activate state for restarting a completed run"),
+    ] = None,
+    message: Annotated[
+        str | None,
+        typer.Option(help="Auditable task message for restarting a completed run"),
+    ] = None,
     control_dir: ControlDir = DEFAULT_CONTROL_DIR,
 ) -> None:
+    async def resume():
+        registry = _registry(control_dir)
+        await registry._initialize()
+        runtime = await registry.storage.get_runtime(workspace_id)
+        if runtime is None:
+            raise ConfigError(f"unknown workspace: {workspace_id}")
+        if runtime.status != "completed":
+            if state is not None or message is not None:
+                raise ConfigError("--state and --message are only valid for a completed workspace")
+            return await registry.resume(workspace_id), None, None
+        if state is None or message is None:
+            raise ConfigError(
+                "completed workspace resume requires --state and --message to record "
+                "an organizer restart event"
+            )
+        event, cursor = await _append_workspace_event(
+            registry,
+            workspace_id,
+            actor="organizer",
+            state=state,
+            message=message,
+        )
+        return await registry.storage.get_runtime(workspace_id), event, cursor
+
     try:
-        runtime = _run(_registry(control_dir).resume(workspace_id))
+        runtime, event, cursor = _run(resume())
     except Exception as exc:
         _fail(exc)
-    typer.echo(runtime.model_dump_json())
+    if event is None:
+        typer.echo(runtime.model_dump_json())
+    else:
+        typer.echo(
+            json.dumps(
+                {
+                    "runtime": runtime.model_dump(mode="json"),
+                    "event_id": event.event_id,
+                    "cursor": cursor,
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 @workspace_app.command("status")
@@ -217,52 +346,18 @@ def append_event(
     event_id: Annotated[str | None, typer.Option()] = None,
     control_dir: ControlDir = DEFAULT_CONTROL_DIR,
 ) -> None:
-    async def append() -> tuple[Event, int]:
-        registry = _registry(control_dir)
-        await registry._initialize()
-        config = registry.load_config(workspace_id)
-        runtime = await registry.storage.get_runtime(workspace_id)
-        if runtime is None or runtime.status != "running":
-            raise ConfigError("workspace must be running before appending events")
-        item = Event(
-            event_id=event_id or str(uuid.uuid4()),
-            workspace_id=workspace_id,
-            config_version=config.workspace.version,
-            actor_id=actor,
-            state_id=state,
-            message=message,
-            causation_id=causation_id,
-        )
-        event_log = registry.event_log(workspace_id)
-        pending_entries = event_log.read_entries_from(
-            runtime.cursor,
-            expected_identity=runtime.event_log_identity,
-        )
-        pending_events = [existing for existing, _ in pending_entries]
-        validated_cursor = pending_entries[-1][1] if pending_entries else runtime.cursor
-        all_events = [
-            existing
-            for existing, _ in event_log.read_entries_from(
-                0,
-                expected_identity=runtime.event_log_identity,
-            )
-        ]
-        engine = StateGraphEngine(config)
-        lookup = {existing.event_id: existing for existing in all_events}
-        active_node = runtime.active_node
-        last_action: str | None = None
-        for batch in aggregate_consecutive(pending_events):
-            decision = engine.decide(batch, event_lookup=lookup, expected_active_node=active_node)
-            active_node = decision.active_node
-            last_action = decision.action
-        if last_action in {"pause", "complete"}:
-            raise ConfigError(f"event log already reached terminal action {last_action}")
-        engine.decide([item], event_lookup=lookup, expected_active_node=active_node)
-        cursor = event_log.append(item, expected_cursor=validated_cursor)
-        return item, cursor
-
     try:
-        item, cursor = _run(append())
+        item, cursor = _run(
+            _append_workspace_event(
+                _registry(control_dir),
+                workspace_id,
+                actor=actor,
+                state=state,
+                message=message,
+                causation_id=causation_id,
+                event_id=event_id,
+            )
+        )
     except Exception as exc:
         _fail(exc)
     typer.echo(json.dumps({"event_id": item.event_id, "cursor": cursor}))

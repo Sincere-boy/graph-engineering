@@ -44,6 +44,20 @@ graphctl event append passive-qa-e2e \
 graphctl delivery list passive-qa-e2e
 ```
 
+工作区进入 `completed` 后仍可开始新一轮任务。恢复事件必须由组织者写入一个配置中
+`allowed_writers` 包含组织者且 action 为 `activate` 的状态；目标 Agent 继续由配置决定：
+
+```bash
+graphctl workspace resume passive-qa-e2e \
+  --state pending_development --message '下一轮任务说明'
+# 等价方式：直接追加同一个组织者事件
+graphctl event append passive-qa-e2e \
+  --actor organizer --state pending_development --message '下一轮任务说明'
+```
+
+恢复操作会保留上一轮完整 Event Log，追加新的审计事件，并从该事件继续消费；裸
+`workspace resume` 仍只用于尚未完成的 registered/paused 工作区。
+
 `workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，创建
 全新应用，写 Role Profile，创建群、话题和 session，并原子保存可恢复 checkpoint。
 重复执行不会重复创建已完成资源；它会重新协调 Bot 配置、群成员与 Role Profile，
