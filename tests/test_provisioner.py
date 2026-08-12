@@ -79,7 +79,7 @@ class FakeAdmin:
         self, *, app_id: str, chat_id: str, title: str, instruction: str, idempotency_key: str
     ) -> tuple[str, str]:
         self.topics += 1
-        return f"root-{app_id}", f"session-{app_id}"
+        return f"om_{app_id}", f"session-{app_id}"
 
 
 @pytest.mark.asyncio
@@ -186,6 +186,38 @@ async def test_provision_resumes_from_checkpoint_after_interruption(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_reprovision_replaces_chat_scope_binding_with_fixed_native_topic(
+    tmp_path: Path,
+) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+    storage = SQLiteStorage(tmp_path / "state.db")
+    admin = FakeAdmin()
+    provisioner = Provisioner(tmp_path, admin, storage=storage)
+    original = await provisioner.provision(config)
+    checkpoint_path = tmp_path / "workspaces" / "provision-test" / "provision-checkpoint.json"
+    checkpoint = __import__("json").loads(checkpoint_path.read_text())
+    checkpoint["topics"]["developer"] = {
+        "root_message_id": original.chat_id,
+        "session_id": "chat-scope-session",
+    }
+    checkpoint["provisioning"]["bindings"][1]["root_message_id"] = original.chat_id
+    checkpoint["provisioning"]["bindings"][1]["session_id"] = "chat-scope-session"
+    checkpoint_path.write_text(__import__("json").dumps(checkpoint))
+    invalid = original.model_copy(deep=True)
+    invalid.bindings[1].root_message_id = original.chat_id
+    invalid.bindings[1].session_id = "chat-scope-session"
+    await storage.save_provisioning(invalid)
+
+    repaired = await provisioner.provision(config)
+
+    developer = next(item for item in repaired.bindings if item.agent_id == "developer")
+    assert developer.root_message_id.startswith("om_")
+    assert developer.root_message_id != repaired.chat_id
+    assert developer.session_id != "chat-scope-session"
+    assert admin.topics == 3
+
+
+@pytest.mark.asyncio
 async def test_onboarding_uses_confirmed_session_without_managed_activation_gate() -> None:
     seen: list[httpx.Request] = []
 
@@ -225,9 +257,14 @@ async def test_onboarding_uses_confirmed_session_without_managed_activation_gate
 @pytest.mark.asyncio
 async def test_group_topic_uses_checkpoint_idempotency_not_invalid_virtual_key() -> None:
     seen: list[httpx.Request] = []
+    reply_mode = "chat-topic"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal reply_mode
         seen.append(request)
+        if request.url.path.endswith("/card-prefs"):
+            reply_mode = __import__("json").loads(request.content)["regularGroupReplyMode"]
+            return httpx.Response(200, json={"ok": True})
         if request.method == "POST":
             return httpx.Response(200, json={"target": {"sessionId": "session-new"}})
         if request.url.path.endswith("/trigger-result"):
@@ -235,7 +272,16 @@ async def test_group_topic_uses_checkpoint_idempotency_not_invalid_virtual_key()
         if request.url.path == "/api/sessions":
             return httpx.Response(
                 200,
-                json={"sessions": [{"sessionId": "session-new", "rootMessageId": "root-new"}]},
+                json={
+                    "sessions": [
+                        {
+                            "sessionId": "session-new",
+                            "rootMessageId": (
+                                "om_topic-root" if reply_mode == "new-topic" else "chat"
+                            ),
+                        }
+                    ]
+                },
             )
         raise AssertionError(request.url.path)
 
@@ -251,10 +297,21 @@ async def test_group_topic_uses_checkpoint_idempotency_not_invalid_virtual_key()
     )
     await client.close()
 
-    body = __import__("json").loads(seen[0].content)
-    assert (root, session) == ("root-new", "session-new")
+    trigger = next(
+        request
+        for request in seen
+        if request.method == "POST" and request.url.path == "/api/trigger"
+    )
+    body = __import__("json").loads(trigger.content)
+    assert (root, session) == ("om_topic-root", "session-new")
     assert body["target"]["chatId"] == "chat"
     assert "idempotencyKey" not in body["options"]
+    modes = [
+        __import__("json").loads(request.content)["regularGroupReplyMode"]
+        for request in seen
+        if request.url.path.endswith("/card-prefs")
+    ]
+    assert modes == ["new-topic", "chat-topic"]
 
 
 @pytest.mark.asyncio

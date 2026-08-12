@@ -173,20 +173,21 @@ class BotmuxAdminClient:
         agent = await self._json("PUT", f"/api/bots/{app_id}/agent", json={"cliId": cli_id})
         if agent.get("ok") is False:
             raise BotmuxError(f"bot agent configuration failed: {agent}")
-        preferences = await self._json(
-            "PUT",
-            f"/api/bots/{app_id}/card-prefs",
-            # A native topic remains an independent persistent session.  In
-            # contrast, new-topic forks a session for every top-level mention.
-            json={"regularGroupReplyMode": "chat-topic"},
-        )
-        if preferences.get("ok") is False:
-            raise BotmuxError(f"bot topic configuration failed: {preferences}")
+        await self._set_reply_mode(app_id, "chat-topic")
         launch_shell = await self._json(
             "PUT", f"/api/bots/{app_id}/launch-shell", json={"launchShell": "zsh"}
         )
         if launch_shell.get("ok") is False:
             raise BotmuxError(f"bot launch shell configuration failed: {launch_shell}")
+
+    async def _set_reply_mode(self, app_id: str, mode: str) -> None:
+        preferences = await self._json(
+            "PUT",
+            f"/api/bots/{app_id}/card-prefs",
+            json={"regularGroupReplyMode": mode},
+        )
+        if preferences.get("ok") is False:
+            raise BotmuxError(f"bot topic configuration failed: {preferences}")
 
     async def create_group(
         self, *, name: str, app_ids: list[str], working_dir: str, profile_id: str
@@ -250,37 +251,47 @@ class BotmuxAdminClient:
         instruction: str,
         idempotency_key: str,
     ) -> tuple[str, str]:
-        payload = await self._json(
-            "POST",
-            "/api/trigger",
-            json={
-                "source": {"type": "workflow", "requestId": idempotency_key},
-                "target": {"kind": "turn", "botId": app_id, "chatId": chat_id},
-                "instruction": instruction,
-                "envelope": {
-                    "format": "graph-engineering.provision.v1",
-                    "sourceName": "graph-engineering",
-                    "trusted": False,
-                    "payload": {"purpose": "initialize-agent-topic"},
+        # `/api/trigger` follows the Bot's ordinary-group mode for a chat target.
+        # Temporarily opt into one fresh native topic, then restore chat-topic so
+        # future top-level mentions remain flat and graph traffic can only reuse
+        # the frozen root via `dispatch --into`.
+        await self._set_reply_mode(app_id, "new-topic")
+        try:
+            payload = await self._json(
+                "POST",
+                "/api/trigger",
+                json={
+                    "source": {"type": "workflow", "requestId": idempotency_key},
+                    "target": {"kind": "turn", "botId": app_id, "chatId": chat_id},
+                    "instruction": instruction,
+                    "envelope": {
+                        "format": "graph-engineering.provision.v1",
+                        "sourceName": "graph-engineering",
+                        "trusted": False,
+                        "payload": {"purpose": "initialize-agent-topic"},
+                    },
+                    "presentation": {"topicMessage": title[:200]},
+                    "options": {
+                        "asyncReturnSessionId": True,
+                        "waitForFinalOutput": False,
+                    },
                 },
-                "presentation": {"topicMessage": title[:200]},
-                "options": {
-                    "asyncReturnSessionId": True,
-                    "waitForFinalOutput": False,
-                },
-            },
-        )
-        session_id = str((payload.get("target") or {}).get("sessionId") or "")
-        if not session_id:
-            raise BotmuxError(f"topic trigger omitted session id: {payload}")
-        await self._poll_trigger(session_id)
-        sessions = await self._json("GET", "/api/sessions")
-        items = sessions.get("sessions", [])
-        session = next((item for item in items if item.get("sessionId") == session_id), None)
-        root_message_id = str((session or {}).get("rootMessageId") or "")
-        if not root_message_id:
-            raise BotmuxError(f"session {session_id} omitted rootMessageId")
-        return root_message_id, session_id
+            )
+            session_id = str((payload.get("target") or {}).get("sessionId") or "")
+            if not session_id:
+                raise BotmuxError(f"topic trigger omitted session id: {payload}")
+            await self._poll_trigger(session_id)
+            sessions = await self._json("GET", "/api/sessions")
+            items = sessions.get("sessions", [])
+            session = next((item for item in items if item.get("sessionId") == session_id), None)
+            root_message_id = str((session or {}).get("rootMessageId") or "")
+            if not root_message_id.startswith("om_"):
+                raise BotmuxError(
+                    f"session {session_id} did not materialize a native topic root"
+                )
+            return root_message_id, session_id
+        finally:
+            await self._set_reply_mode(app_id, "chat-topic")
 
     async def _poll_trigger(self, session_id: str) -> str:
         for _ in range(self.max_polls):
@@ -415,6 +426,16 @@ class Provisioner:
             self._save_checkpoint(checkpoint_path, checkpoint)
 
         topics: dict[str, dict[str, str]] = checkpoint.setdefault("topics", {})
+        invalid_topic_ids = [
+            agent_id
+            for agent_id, topic in topics.items()
+            if not str(topic.get("root_message_id") or "").startswith("om_")
+            or not str(topic.get("session_id") or "")
+        ]
+        for agent_id in invalid_topic_ids:
+            topics.pop(agent_id, None)
+        if invalid_topic_ids:
+            self._save_checkpoint(checkpoint_path, checkpoint)
         for agent_id in ordered_agents:
             agent = config.agents[agent_id]
             if agent_id in topics:
