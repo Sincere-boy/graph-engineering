@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,63 @@ async def test_processor_persists_intent_before_dispatch_and_advances_cursor(
     runtime = await storage.get_runtime(config.workspace.id)
     assert runtime.cursor > 0
     assert runtime.active_node == "checker"
+
+
+@pytest.mark.asyncio
+async def test_pause_during_delivery_is_not_overwritten_by_stale_runtime(tmp_path: Path) -> None:
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    storage = SQLiteStorage(tmp_path / "state.db")
+    await storage.initialize()
+    await storage.save_runtime(
+        WorkspaceRuntime(
+            workspace_id=config.workspace.id,
+            config_version=1,
+            config_hash=config.content_hash,
+            status="running",
+        )
+    )
+    log = EventLog(tmp_path / "eventlog.jsonl")
+    log.append(
+        Event(
+            event_id="e1",
+            workspace_id=config.workspace.id,
+            config_version=1,
+            actor_id="maker",
+            state_id="inspect",
+            message="please inspect",
+        )
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingDispatcher(RecordingDispatcher):
+        async def dispatch(self, delivery, decision, events, config):
+            self.deliveries.append((delivery, decision, events, config))
+            started.set()
+            await release.wait()
+            return "visible-message-id"
+
+    dispatcher = BlockingDispatcher()
+    processor = WorkspaceProcessor(storage, dispatcher)
+    task = asyncio.create_task(processor.process(config, log))
+    await started.wait()
+    paused = await storage.get_runtime(config.workspace.id)
+    paused.status = "paused"
+    await storage.save_runtime(paused)
+    release.set()
+    await task
+
+    saved = await storage.get_runtime(config.workspace.id)
+    assert saved.status == "paused"
+    assert saved.cursor == 0
+
+    saved.status = "running"
+    await storage.save_runtime(saved)
+    await processor.process(config, log)
+    resumed = await storage.get_runtime(config.workspace.id)
+    assert resumed.status == "running"
+    assert resumed.cursor > 0
+    assert len(dispatcher.deliveries) == 1
 
 
 @pytest.mark.asyncio

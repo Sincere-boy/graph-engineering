@@ -107,6 +107,16 @@ class WorkspaceProcessor:
                 existing.updated_at = utc_now()
                 await self.storage.save_delivery(existing)
 
+            latest_runtime = await self.storage.get_runtime(config.workspace.id)
+            if (
+                latest_runtime is None
+                or latest_runtime.status != "running"
+                or latest_runtime.cursor != runtime.cursor
+                or latest_runtime.config_version != runtime.config_version
+                or latest_runtime.config_hash != runtime.config_hash
+            ):
+                return
+            runtime = latest_runtime
             runtime.cursor = batch[-1][1]
             runtime.active_node = decision.active_node
             active_node = decision.active_node
