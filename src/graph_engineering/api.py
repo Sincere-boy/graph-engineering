@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from graph_engineering.config import WorkspaceConfig
 from graph_engineering.registry import WorkspaceRegistry
 from graph_engineering.storage import Storage
 
@@ -71,6 +72,87 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return [event.model_dump(mode="json") for event in events]
+
+    @app.get("/api/v1/workspaces/{workspace_id}/activity")
+    async def get_workspace_activity(
+        workspace_id: str,
+        after: int = Query(default=0, ge=0),
+    ) -> dict:
+        if await storage.get_runtime(workspace_id) is None:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        if registry is None:
+            raise HTTPException(status_code=503, detail="event registry unavailable")
+        try:
+            event_log = registry.event_log(workspace_id)
+            entries = event_log.read_entries_from(after)
+            events = [event for event, _ in entries]
+            event_lookup = {event.event_id: event for event in events}
+            if any(event.state_id == "human_resolved" for event in events):
+                all_events, _ = event_log.read_from(0)
+                event_lookup = {event.event_id: event for event in all_events}
+
+            configs: dict[int, WorkspaceConfig] = {}
+
+            def config_for(version: int) -> WorkspaceConfig:
+                if version not in configs:
+                    path = registry.workspace_dir(workspace_id) / f"config-v{version}.yaml"
+                    configs[version] = WorkspaceConfig.from_yaml(path)
+                return configs[version]
+
+            def node(config: WorkspaceConfig, node_id: str | None) -> dict | None:
+                if node_id is None:
+                    return None
+                labels = {"human": "人工", "completed": "完成", "paused": "暂停"}
+                agent = config.agents.get(node_id)
+                return {
+                    "id": node_id,
+                    "name": (
+                        agent.display_name
+                        if agent is not None
+                        else labels.get(node_id, node_id)
+                    ),
+                }
+
+            activity = []
+            for event in events:
+                config = config_for(event.config_version)
+                actor = node(config, event.actor_id)
+                if event.state_id == "human_required":
+                    state_name = "待人工"
+                    target_id = "human"
+                elif event.state_id == "human_resolved":
+                    state_name = "人工已处理"
+                    original = event_lookup.get(event.causation_id or "")
+                    target_id = original.actor_id if original is not None else None
+                else:
+                    state_config = config.states.get(event.state_id)
+                    state_name = (
+                        state_config.display_name if state_config is not None else event.state_id
+                    )
+                    if state_config is None:
+                        target_id = None
+                    elif state_config.action.type == "activate":
+                        target_id = state_config.action.target
+                    else:
+                        target_id = {
+                            "complete": "completed",
+                            "pause": "paused",
+                        }[state_config.action.type]
+                activity.append(
+                    {
+                        "actor": actor,
+                        "state": {"id": event.state_id, "name": state_name},
+                        "target": node(config, target_id),
+                        "message": event.message,
+                        "created_at": event.created_at,
+                    }
+                )
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "items": activity,
+            "next_cursor": entries[-1][1] if entries else after,
+        }
 
     @app.get("/api/v1/workspaces/{workspace_id}/deliveries")
     async def get_workspace_deliveries(workspace_id: str) -> list[dict]:

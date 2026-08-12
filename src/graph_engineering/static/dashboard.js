@@ -1,3 +1,5 @@
+import { changedSections } from "./dashboard_state.js";
+
 const API = "/api/v1";
 const REFRESH_INTERVAL = 1_000;
 
@@ -5,6 +7,11 @@ const state = {
   workspaces: [],
   selectedId: new URLSearchParams(location.search).get("workspace"),
   refreshing: false,
+  detailWorkspaceId: null,
+  detailRequestVersion: 0,
+  activityCursor: 0,
+  activityItems: [],
+  snapshot: { workspaces: null, graph: null, sessions: null, activity: null },
 };
 
 const elements = {
@@ -92,7 +99,7 @@ function renderWorkspaceList() {
 
 function setField(root, field, value) {
   const target = root.querySelector(`[data-field="${field}"]`);
-  if (target) target.textContent = value;
+  if (target && target.textContent !== String(value)) target.textContent = value;
 }
 
 function svgElement(tag, attributes = {}) {
@@ -194,51 +201,137 @@ function renderSessions(tbody, sessions) {
     </tr>`).join("");
 }
 
-async function renderDetail(workspace) {
+function renderActivity(container, activity) {
+  if (!activity.length) {
+    container.innerHTML = '<div class="empty-copy">还没有状态事件</div>';
+    return;
+  }
+  container.innerHTML = [...activity].reverse().map((item) => `
+    <article class="activity-item">
+      <time class="activity-time" datetime="${escapeHtml(item.created_at)}">${escapeHtml(formatDate(item.created_at))}</time>
+      <div class="activity-route">
+        <div class="activity-route-line">
+          <strong>${escapeHtml(item.actor?.name || item.actor?.id || "未知")}</strong>
+          <span class="activity-arrow" aria-label="流向">→</span>
+          <strong>${escapeHtml(item.target?.name || item.target?.id || "—")}</strong>
+        </div>
+        <span class="activity-state">${escapeHtml(item.state?.name || item.state?.id || "未知状态")}</span>
+      </div>
+      <p class="activity-message">${escapeHtml(item.message || "（无内容）")}</p>
+    </article>`).join("");
+}
+
+function updateWorkspaceSelection() {
+  elements.list.querySelectorAll("[data-workspace-id]").forEach((button) => {
+    const selected = button.dataset.workspaceId === state.selectedId;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+}
+
+function ensureDetailShell(workspace) {
+  if (state.detailWorkspaceId === workspace.workspace_id) {
+    return elements.detail.firstElementChild;
+  }
   const fragment = elements.template.content.cloneNode(true);
   const root = document.createElement("div");
   root.className = "detail-column";
+  root.dataset.workspaceId = workspace.workspace_id;
   root.append(fragment);
-  setField(root, "name", workspace.workspace_id);
-  root.querySelector('[data-field="status-badge"]').innerHTML = badge(workspace.status);
+  setField(root, "repository", "正在读取配置…");
+  root.querySelector('[data-field="graph"]').innerHTML = '<div class="loading-copy">正在加载状态图…</div>';
+  root.querySelector('[data-field="activity"]').innerHTML = '<div class="loading-copy">正在读取 Event Log…</div>';
+  root.querySelector('[data-field="sessions"]').innerHTML = '<tr><td colspan="4" class="loading-copy">正在读取 Session…</td></tr>';
+  elements.detail.replaceChildren(root);
+  state.detailWorkspaceId = workspace.workspace_id;
+  state.snapshot.graph = null;
+  state.snapshot.sessions = null;
+  state.snapshot.activity = null;
+  state.activityCursor = 0;
+  state.activityItems = [];
+  return root;
+}
+
+function updateRuntimeFields(root, workspace) {
+  const graphWorkspace = state.snapshot.graph?.workspace;
+  setField(root, "name", graphWorkspace?.name || workspace.workspace_id);
   setField(root, "version", `v${workspace.config_version}`);
   setField(root, "health", statusLabel[workspace.health] || workspace.health || "未知");
   setField(root, "updated-at", formatDate(workspace.updated_at));
-  setField(root, "repository", "正在读取配置…");
-  root.querySelector('[data-field="graph"]').innerHTML = '<div class="loading-copy">正在加载状态图…</div>';
-  root.querySelector('[data-field="sessions"]').innerHTML = '<tr><td colspan="4" class="loading-copy">正在读取 Session…</td></tr>';
-  elements.detail.replaceChildren(root);
+  const statusTarget = root.querySelector('[data-field="status-badge"]');
+  if (statusTarget.dataset.status !== workspace.status) {
+    statusTarget.innerHTML = badge(workspace.status);
+    statusTarget.dataset.status = workspace.status;
+  }
+}
 
+function sectionChanged(section, value) {
+  return changedSections(
+    { [section]: state.snapshot[section] },
+    { [section]: value },
+  ).length > 0;
+}
+
+async function updateDetail(workspace) {
+  const root = ensureDetailShell(workspace);
+  updateRuntimeFields(root, workspace);
   const selectedAtRequest = workspace.workspace_id;
-  const [graphResult, sessionsResult] = await Promise.allSettled([
+  const requestVersion = ++state.detailRequestVersion;
+
+  const [graphResult, sessionsResult, activityResult] = await Promise.allSettled([
     request(`/workspaces/${encodeURIComponent(selectedAtRequest)}/graph`),
     request(`/workspaces/${encodeURIComponent(selectedAtRequest)}/sessions`),
+    request(
+      `/workspaces/${encodeURIComponent(selectedAtRequest)}/activity?after=${state.activityCursor}`,
+    ),
   ]);
-  if (state.selectedId !== selectedAtRequest) return;
+  if (
+    state.selectedId !== selectedAtRequest ||
+    requestVersion !== state.detailRequestVersion
+  ) return;
 
   const currentRoot = elements.detail.firstElementChild;
   if (graphResult.status === "fulfilled") {
     setField(currentRoot, "name", graphResult.value.workspace.name);
     setField(currentRoot, "repository", graphResult.value.workspace.repository);
-    renderGraph(currentRoot.querySelector('[data-field="graph"]'), graphResult.value);
-  } else {
+    if (sectionChanged("graph", graphResult.value)) {
+      renderGraph(currentRoot.querySelector('[data-field="graph"]'), graphResult.value);
+      state.snapshot.graph = graphResult.value;
+    }
+  } else if (state.snapshot.graph === null) {
     currentRoot.querySelector('[data-field="graph"]').innerHTML = `<div class="error-copy">状态图加载失败：${escapeHtml(graphResult.reason.message)}</div>`;
   }
   if (sessionsResult.status === "fulfilled") {
     setField(currentRoot, "session-count", `${sessionsResult.value.length} SESSIONS`);
-    renderSessions(currentRoot.querySelector('[data-field="sessions"]'), sessionsResult.value);
-  } else {
+    if (sectionChanged("sessions", sessionsResult.value)) {
+      renderSessions(currentRoot.querySelector('[data-field="sessions"]'), sessionsResult.value);
+      state.snapshot.sessions = sessionsResult.value;
+    }
+  } else if (state.snapshot.sessions === null) {
     setField(currentRoot, "session-count", "UNAVAILABLE");
     currentRoot.querySelector('[data-field="sessions"]').innerHTML = `<tr><td colspan="4" class="error-copy">Session 加载失败：${escapeHtml(sessionsResult.reason.message)}</td></tr>`;
+  }
+  if (activityResult.status === "fulfilled") {
+    const nextActivity = state.activityItems.concat(activityResult.value.items);
+    state.activityCursor = activityResult.value.next_cursor;
+    setField(currentRoot, "activity-count", `${nextActivity.length} EVENTS`);
+    if (sectionChanged("activity", nextActivity)) {
+      renderActivity(currentRoot.querySelector('[data-field="activity"]'), nextActivity);
+      state.activityItems = nextActivity;
+      state.snapshot.activity = nextActivity;
+    }
+  } else if (state.snapshot.activity === null) {
+    setField(currentRoot, "activity-count", "UNAVAILABLE");
+    currentRoot.querySelector('[data-field="activity"]').innerHTML = `<div class="error-copy">Event Log 加载失败：${escapeHtml(activityResult.reason.message)}</div>`;
   }
 }
 
 function selectWorkspace(workspaceId, { updateUrl = true } = {}) {
   state.selectedId = workspaceId;
   if (updateUrl) history.replaceState(null, "", `?workspace=${encodeURIComponent(workspaceId)}`);
-  renderWorkspaceList();
+  updateWorkspaceSelection();
   const workspace = state.workspaces.find((item) => item.workspace_id === workspaceId);
-  if (workspace) renderDetail(workspace);
+  if (workspace) void updateDetail(workspace);
 }
 
 async function refresh({ manual = false } = {}) {
@@ -246,15 +339,23 @@ async function refresh({ manual = false } = {}) {
   state.refreshing = true;
   if (manual) elements.refresh.classList.add("loading");
   try {
-    state.workspaces = await request("/workspaces");
+    const nextWorkspaces = await request("/workspaces");
     elements.connection.className = "connection online";
     elements.connection.lastElementChild.textContent = "实时数据已连接";
-    if (!state.selectedId || !state.workspaces.some((item) => item.workspace_id === state.selectedId)) {
-      state.selectedId = state.workspaces[0]?.workspace_id || null;
+    const previousSelectedId = state.selectedId;
+    if (!state.selectedId || !nextWorkspaces.some((item) => item.workspace_id === state.selectedId)) {
+      state.selectedId = nextWorkspaces[0]?.workspace_id || null;
     }
-    renderCounters();
-    renderWorkspaceList();
-    if (state.selectedId) selectWorkspace(state.selectedId, { updateUrl: false });
+    state.workspaces = nextWorkspaces;
+    if (sectionChanged("workspaces", nextWorkspaces)) {
+      renderCounters();
+      renderWorkspaceList();
+      state.snapshot.workspaces = nextWorkspaces;
+    } else if (previousSelectedId !== state.selectedId) {
+      updateWorkspaceSelection();
+    }
+    const selected = state.workspaces.find((item) => item.workspace_id === state.selectedId);
+    if (selected) await updateDetail(selected);
   } catch (error) {
     elements.connection.className = "connection offline";
     elements.connection.lastElementChild.textContent = "连接失败";

@@ -9,6 +9,7 @@ from graph_engineering.api import create_app
 from graph_engineering.config import WorkspaceConfig
 from graph_engineering.models import (
     Delivery,
+    Event,
     SessionBinding,
     WorkspaceProvisioning,
 )
@@ -99,6 +100,16 @@ def dashboard_app(tmp_path: Path) -> FastAPI:
                 ],
             )
         )
+        registry.event_log(config.workspace.id).append(
+            Event(
+                event_id="internal-log-id",
+                workspace_id=config.workspace.id,
+                config_version=config.workspace.version,
+                actor_id="maker",
+                state_id="inspect",
+                message="请检查这次实现",
+            )
+        )
 
     asyncio.run(seed())
     runtime_service = DashboardRuntime(
@@ -141,6 +152,7 @@ def test_dashboard_page_and_assets_are_served(tmp_path: Path) -> None:
     assert page.status_code == 200
     assert 'data-app-root' in page.text
     assert "Workspace Graph Console" in page.text
+    assert "Event Log" in page.text
     assert script.status_code == 200
     assert "const REFRESH_INTERVAL = 1_000;" in script.text
     assert stylesheet.status_code == 200
@@ -176,3 +188,27 @@ def test_workspace_sessions_include_missing_and_unregistered_sessions(tmp_path: 
     assert sessions["session-extra"]["registered"] is False
     assert sessions["session-extra"]["requires_attention"] is True
     assert "other-workspace" not in sessions
+
+
+def test_workspace_activity_exposes_semantic_event_fields_without_log_ids(
+    tmp_path: Path,
+) -> None:
+    with TestClient(dashboard_app(tmp_path)) as client:
+        response = client.get("/api/v1/workspaces/arbitrary-flow/activity")
+        payload = response.json()
+        unchanged = client.get(
+            "/api/v1/workspaces/arbitrary-flow/activity",
+            params={"after": payload["next_cursor"]},
+        )
+
+    assert response.status_code == 200
+    activity = payload["items"]
+    assert len(activity) == 1
+    assert activity[0]["actor"] == {"id": "maker", "name": "任意制造者"}
+    assert activity[0]["state"] == {"id": "inspect", "name": "进入检查"}
+    assert activity[0]["target"] == {"id": "checker", "name": "任意检查者"}
+    assert activity[0]["message"] == "请检查这次实现"
+    assert "created_at" in activity[0]
+    assert "event_id" not in activity[0]
+    assert "log_id" not in activity[0]
+    assert unchanged.json()["items"] == []
