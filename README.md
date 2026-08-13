@@ -9,8 +9,9 @@
 - Event Log 是工作区的 append-only 事实源，使用文件锁、完整 JSONL 记录与 `fsync`。
 - 服务端消费前再次校验 actor、状态、版本与人工事件因果关系。
 - 路由只由冻结配置决定；组织者只能做摘要和可见投递，不能自行选择目标。
-- 话题绑定以 `(workspace_id, agent_id)` 为稳定身份：初始化时每个 Agent 恰好创建一个
-  原生话题和 session，后续投递只允许复用登记的 `root_message_id`/`session_id`。
+- 组织者绑定工作区群 Session，不创建固定话题；用户在群内 @组织者产生的会话由该群范围覆盖。
+  其他 Agent 以 `(workspace_id, agent_id)` 为稳定身份：初始化时各创建一个原生固定话题和
+  session，后续投递只允许复用登记的 `root_message_id`/`session_id`。
 - Botmux 群回复使用 `chat-topic`；禁止 `new-topic`、`botmux report`、带 `--title` 的
   dispatch 和顶层回报，避免每次交接 fork 新话题。
 - outbox 意图先于外部投递持久化；结果不明确时进入 `needs_reconcile`，不盲目重发。
@@ -96,7 +97,8 @@ graphctl event append passive-qa-e2e \
 
 `workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，默认
 创建全新应用；指定 `--reuse-bots-from` 时按稳定 Agent ID 复用来源工作区的应用身份，但
-始终为目标工作区创建独立的新群、固定话题和 session。命令会写 Role Profile，并原子保存可恢复 checkpoint。
+始终为目标工作区创建独立的新群、组织者群 Session，以及其他 Agent 的固定话题和 session。
+命令会写 Role Profile，并原子保存可恢复 checkpoint。
 重复执行不会重复创建已完成资源；它会重新协调 Bot 配置、群成员与 Role Profile，
 因此协议修复会应用到既有固定话题而不新增话题。
 

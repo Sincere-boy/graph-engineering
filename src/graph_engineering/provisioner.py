@@ -46,6 +46,16 @@ class BotmuxAdmin(Protocol):
         idempotency_key: str,
     ) -> tuple[str, str]: ...
 
+    async def create_group_session(
+        self,
+        *,
+        app_id: str,
+        chat_id: str,
+        title: str,
+        instruction: str,
+        idempotency_key: str,
+    ) -> tuple[str, str]: ...
+
 
 class BotmuxAdminClient:
     """Documented botmux Dashboard API adapter; never reads botmux private formats."""
@@ -294,6 +304,47 @@ class BotmuxAdminClient:
         finally:
             await self._set_reply_mode(app_id, "chat-topic")
 
+    async def create_group_session(
+        self,
+        *,
+        app_id: str,
+        chat_id: str,
+        title: str,
+        instruction: str,
+        idempotency_key: str,
+    ) -> tuple[str, str]:
+        payload = await self._json(
+            "POST",
+            "/api/trigger",
+            json={
+                "source": {"type": "workflow", "requestId": idempotency_key},
+                "target": {"kind": "turn", "botId": app_id, "chatId": chat_id},
+                "instruction": instruction,
+                "envelope": {
+                    "format": "graph-engineering.provision.v1",
+                    "sourceName": "graph-engineering",
+                    "trusted": False,
+                    "payload": {"purpose": "initialize-organizer-group-session"},
+                },
+                "presentation": {"topicMessage": title[:200]},
+                "options": {
+                    "asyncReturnSessionId": True,
+                    "waitForFinalOutput": False,
+                },
+            },
+        )
+        session_id = str((payload.get("target") or {}).get("sessionId") or "")
+        if not session_id:
+            raise BotmuxError(f"group trigger omitted session id: {payload}")
+        await self._poll_trigger(session_id)
+        sessions = await self._json("GET", "/api/sessions")
+        items = sessions.get("sessions", [])
+        session = next((item for item in items if item.get("sessionId") == session_id), None)
+        root_message_id = str((session or {}).get("rootMessageId") or "")
+        if not root_message_id:
+            raise BotmuxError(f"session {session_id} did not materialize a group root")
+        return root_message_id, session_id
+
     async def _poll_trigger(self, session_id: str) -> str:
         for _ in range(self.max_polls):
             payload = await self._json("GET", f"/api/sessions/{session_id}/trigger-result")
@@ -365,6 +416,7 @@ class Provisioner:
             checkpoint.setdefault("chat_id", existing.chat_id)
             checkpoint_apps = checkpoint.setdefault("apps", {})
             checkpoint_topics = checkpoint.setdefault("topics", {})
+            checkpoint_scopes = checkpoint.setdefault("session_scopes", {})
             for binding in existing.bindings:
                 if binding.agent_id not in ordered_agents:
                     removed_bindings.append(binding)
@@ -377,6 +429,7 @@ class Provisioner:
                         "session_id": binding.session_id,
                     },
                 )
+                checkpoint_scopes.setdefault(binding.agent_id, binding.session_scope)
         apps: dict[str, str] = checkpoint.setdefault("apps", {})
         if reuse_apps is not None:
             missing_agents = [
@@ -473,10 +526,17 @@ class Provisioner:
             self._save_checkpoint(checkpoint_path, checkpoint)
 
         topics: dict[str, dict[str, str]] = checkpoint.setdefault("topics", {})
+        session_scopes: dict[str, str] = checkpoint.setdefault("session_scopes", {})
         invalid_topic_ids = [
             agent_id
             for agent_id, topic in topics.items()
-            if not str(topic.get("root_message_id") or "").startswith("om_")
+            if not (
+                str(topic.get("root_message_id") or "").startswith("om_")
+                or (
+                    session_scopes.get(agent_id) == "group"
+                    and str(topic.get("root_message_id") or "") == chat_id
+                )
+            )
             or not str(topic.get("session_id") or "")
         ]
         for agent_id in invalid_topic_ids:
@@ -495,13 +555,28 @@ class Provisioner:
                 summary += (
                     f"\n\n配置摘要：\n```yaml\n{config.to_yaml()}```\n\n```mermaid\n{diagram}```"
                 )
-            root_id, session_id = await self.admin.create_topic(
-                app_id=apps[agent_id],
-                chat_id=chat_id,
-                title=f"{agent.display_name} · {config.workspace.id}",
-                instruction=summary,
-                idempotency_key=f"ge:{config.workspace.id}:v{config.workspace.version}:topic:{agent_id}",
-            )
+            if agent_id == "organizer":
+                root_id, session_id = await self.admin.create_group_session(
+                    app_id=apps[agent_id],
+                    chat_id=chat_id,
+                    title=f"{agent.display_name} · {config.workspace.id}",
+                    instruction=summary,
+                    idempotency_key=(
+                        f"ge:{config.workspace.id}:v{config.workspace.version}:group:{agent_id}"
+                    ),
+                )
+                session_scopes[agent_id] = "group"
+            else:
+                root_id, session_id = await self.admin.create_topic(
+                    app_id=apps[agent_id],
+                    chat_id=chat_id,
+                    title=f"{agent.display_name} · {config.workspace.id}",
+                    instruction=summary,
+                    idempotency_key=(
+                        f"ge:{config.workspace.id}:v{config.workspace.version}:topic:{agent_id}"
+                    ),
+                )
+                session_scopes[agent_id] = "topic"
             topics[agent_id] = {"root_message_id": root_id, "session_id": session_id}
             self._save_checkpoint(checkpoint_path, checkpoint)
 
@@ -516,6 +591,7 @@ class Provisioner:
                     chat_id=chat_id,
                     root_message_id=topics[agent_id]["root_message_id"],
                     session_id=topics[agent_id]["session_id"],
+                    session_scope=session_scopes.get(agent_id, "topic"),
                 )
                 for agent_id in ordered_agents
             ],

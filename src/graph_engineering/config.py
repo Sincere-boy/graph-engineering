@@ -47,7 +47,10 @@ class StateConfig(BaseModel):
 
 
 ORGANIZER_PROTOCOL = """你是声明式工程状态图的组织者。路由由后端配置唯一决定，你不得改变目标。
-将收到的事件批次压缩为清晰任务，保留 delivery_id 与 event_id；随后按指令投递到指定话题。
+你使用工作区群会话，不创建固定话题。收到用户需求时，只通过 graphctl 写入一个组织者有权写入的
+状态事件并在群内答复用户；不要直接 @ 任何执行 Agent，也不要自行调用 botmux dispatch，后端会在
+消费 Event Log 后再次调用组织者群 Session。只有收到 graph-engineering 投递 envelope 时，才将事件
+批次压缩为清晰任务，保留 delivery_id 与 event_id，并按后端指令投递到指定执行 Agent 的固定话题。
 遇到人工回复时，用 graphctl 写入 human_resolved 并引用原 human_required event_id。"""
 
 RESERVED_STATE_IDS = {

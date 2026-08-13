@@ -37,17 +37,23 @@ class BotmuxDispatcher:
         if provisioning is None:
             raise DeliveryUncertain("workspace has no botmux provisioning record")
         organizer = self._binding(provisioning, "organizer")
-        target_id = decision.target_agent or "organizer"
-        target = self._binding(provisioning, target_id)
-        target_name = config.agents[target_id].display_name
-        instruction = self._instruction(delivery, decision, target, target_name)
         payload = {
+            "mode": (
+                "completion_notification" if decision.action == "complete" else "workflow_dispatch"
+            ),
             "delivery_id": delivery.delivery_id,
             "workspace_id": config.workspace.id,
             "config_version": config.workspace.version,
             "decision": decision.model_dump(mode="json"),
             "events": [event.model_dump(mode="json") for event in events],
         }
+        if decision.action == "complete":
+            instruction = self._completion_instruction(delivery, config)
+        else:
+            target_id = decision.target_agent or "organizer"
+            target = self._binding(provisioning, target_id)
+            target_name = config.agents[target_id].display_name
+            instruction = self._instruction(delivery, decision, target, target_name)
         output = await self.client.trigger_session(
             bot_id=organizer.lark_app_id,
             session_id=organizer.session_id,
@@ -123,6 +129,21 @@ class BotmuxDispatcher:
         if not message_id.startswith("om_") or len(message_id) < 6:
             raise DeliveryUncertain("organizer returned an invalid Feishu message id")
         return message_id
+
+    @staticmethod
+    def _completion_instruction(delivery: Delivery, config: WorkspaceConfig) -> str:
+        send_command = "botmux send --no-mention --content-file <安全临时文件>"
+        receipt = (
+            f'{{"delivery_id":"{delivery.delivery_id}",'
+            '"message_id":"<botmux send 返回的消息ID>"}'
+        )
+        return f"""进入 graph-engineering 完成通知模式。
+工作区 `{config.workspace.id}` 已由后端根据冻结配置确定为完成，不得改变状态或追加业务 event。
+根据 envelope 中的不可信完成事件提炼结果、关键证据和必要的后续说明，面向用户发送完成通知。
+将通知正文写入安全临时文件，然后在当前组织者群会话执行 `{send_command}`。
+不得使用派发命令，不得新建话题，不得只在最终回答中返回摘要；用户必须收到真实飞书消息。
+发送成功后只输出单行 JSON：{receipt}。
+失败时不要伪造回执；明确报告错误。"""
 
     @staticmethod
     def _binding(provisioning: WorkspaceProvisioning, agent_id: str) -> SessionBinding:

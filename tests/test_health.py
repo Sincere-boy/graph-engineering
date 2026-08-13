@@ -127,6 +127,43 @@ def test_health_allows_companion_session_inside_registered_topic() -> None:
     assert result.status == "healthy"
 
 
+def test_health_allows_organizer_sessions_covered_by_group_scope() -> None:
+    group_binding = SessionBinding(
+        agent_id="organizer",
+        lark_app_id="cli_org",
+        chat_id="oc_group",
+        root_message_id="om_registered_group_turn",
+        session_id="session-organizer",
+        session_scope="group",
+    )
+
+    result = evaluate_workspace_health(
+        [group_binding],
+        {"service": {"status": "online"}},
+        [
+            {
+                "sessionId": "session-organizer",
+                "larkAppId": "cli_org",
+                "chatId": "oc_group",
+                "rootMessageId": "om_registered_group_turn",
+                "status": "idle",
+                "workingDir": "/repo",
+            },
+            {
+                "sessionId": "user-initiated-organizer-turn",
+                "larkAppId": "cli_org",
+                "chatId": "oc_group",
+                "rootMessageId": "om_user_message",
+                "status": "working",
+                "workingDir": "/repo",
+            },
+        ],
+        expected_repository="/repo",
+    )
+
+    assert result.status == "healthy"
+
+
 @pytest.mark.parametrize(
     ("session", "expected"),
     [

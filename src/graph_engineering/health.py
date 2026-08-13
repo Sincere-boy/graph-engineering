@@ -34,6 +34,11 @@ def evaluate_workspace_health(
     degraded: list[str] = []
     attention: list[str] = []
     registered_topic_roots = {binding.root_message_id for binding in bindings}
+    group_scopes = {
+        (binding.lark_app_id, binding.chat_id)
+        for binding in bindings
+        if binding.session_scope == "group"
+    }
     workspace_app_ids = {binding.lark_app_id for binding in bindings}
     workspace_chat_ids = {binding.chat_id for binding in bindings}
     inactive_statuses = {
@@ -51,6 +56,7 @@ def evaluate_workspace_health(
             and session.get("chatId") in workspace_chat_ids
             and str(session.get("rootMessageId", "")).startswith("om_")
             and str(session.get("rootMessageId")) not in registered_topic_roots
+            and (session.get("larkAppId"), session.get("chatId")) not in group_scopes
             and status not in inactive_statuses
             and not session.get("quarantined")
         ):
