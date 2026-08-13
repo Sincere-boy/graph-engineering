@@ -64,6 +64,7 @@ class SessionBinding(BaseModel):
     chat_id: str
     root_message_id: str
     session_id: str
+    session_scope: Literal["group", "topic"] = "topic"
 
 
 class WorkspaceProvisioning(BaseModel):

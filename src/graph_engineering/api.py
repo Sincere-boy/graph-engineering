@@ -295,6 +295,11 @@ def create_app(
             (binding.lark_app_id, binding.chat_id, binding.root_message_id): binding
             for binding in provisioning.bindings
         }
+        bindings_by_group = {
+            (binding.lark_app_id, binding.chat_id): binding
+            for binding in provisioning.bindings
+            if binding.session_scope == "group"
+        }
         live_by_id = {str(item.get("sessionId")): item for item in live_sessions}
 
         def serialize_session(
@@ -311,6 +316,9 @@ def create_app(
                     raw.get("rootMessageId"),
                 )
             )
+            inferred = inferred or bindings_by_group.get(
+                (raw.get("larkAppId"), raw.get("chatId"))
+            )
             agent_id = inferred.agent_id if inferred is not None else None
             agent = config.agents.get(agent_id) if config is not None and agent_id else None
             return {
@@ -319,6 +327,7 @@ def create_app(
                 "agent_name": agent.display_name if agent is not None else None,
                 "status": str(raw.get("status") or "missing"),
                 "registered": registered,
+                "session_scope": inferred.session_scope if inferred is not None else None,
                 "requires_attention": bool(
                     raw.get("agentAttention")
                     or raw.get("tuiPromptActive")
@@ -354,8 +363,16 @@ def create_app(
                 and raw.get("chatId") in workspace_chat_ids
             )
             if session_id and session_id not in bindings_by_session and belongs_to_workspace:
+                group_binding = bindings_by_group.get(
+                    (raw.get("larkAppId"), raw.get("chatId"))
+                )
                 result.append(
-                    serialize_session(session_id, raw, binding=None, registered=False)
+                    serialize_session(
+                        session_id,
+                        raw,
+                        binding=group_binding,
+                        registered=group_binding is not None,
+                    )
                 )
         return result
 

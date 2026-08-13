@@ -171,6 +171,17 @@ class WorkspaceRegistry:
             if agent_id != "organizer"
             else ""
         )
+        communication_protocol = (
+            "通讯协议：组织者使用群会话，不创建固定话题。收到用户需求时不要直接 @ 任何执行 Agent，"
+            "只写入 Event Log 并答复用户；后端会再次调用组织者群 Session，再由你严格按 envelope "
+            "使用 `botmux dispatch --into` 投递到目标 Agent 的固定话题。禁止使用 `botmux report`、"
+            "`botmux dispatch --title` 或 `new-topic`。"
+            if agent_id == "organizer"
+            else (
+                "通讯协议：初始化后始终在当前固定话题内协作，禁止创建新话题。"
+                "禁止使用 `botmux report`、`botmux dispatch --title` 或顶层消息回报；"
+            )
+        )
         return (
             f"# 角色：{agent.display_name}\n\n{agent.prompt}\n\n"
             f"工作区：`{config.workspace.id}`\n"
@@ -184,8 +195,7 @@ class WorkspaceRegistry:
             "--state <state_id> --message '<summary>'\n"
             "```\n"
             "需要人工决定时写 `human_required`；不要自行假设人工答案。\n\n"
-            "通讯协议：初始化后始终在当前固定话题内协作，禁止创建新话题。"
-            "禁止使用 `botmux report`、`botmux dispatch --title` 或顶层消息回报；"
+            f"{communication_protocol}"
             f"{agent_handoff_protocol}"
             "完成、失败与返工只通过上述 `graphctl event append` 写入状态事件。"
             f"{restart_protocol}"

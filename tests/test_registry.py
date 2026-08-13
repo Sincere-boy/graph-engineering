@@ -8,6 +8,19 @@ from graph_engineering.models import Event
 from graph_engineering.registry import WorkspaceRegistry
 
 
+def test_organizer_prompt_uses_group_and_workers_use_fixed_topics(tmp_path: Path) -> None:
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    registry = WorkspaceRegistry(tmp_path / "control")
+
+    organizer = registry.render_agent_prompt(config, "organizer")
+    worker = registry.render_agent_prompt(config, "maker")
+
+    assert "组织者使用群会话，不创建固定话题" in organizer
+    assert "收到用户需求时不要直接 @ 任何执行 Agent" in organizer
+    assert "后端会再次调用组织者群 Session" in organizer
+    assert "始终在当前固定话题内协作" in worker
+
+
 @pytest.mark.asyncio
 async def test_registry_freezes_active_config_and_versions_paused_updates(tmp_path: Path) -> None:
     registry = WorkspaceRegistry(tmp_path / "control")

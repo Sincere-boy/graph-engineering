@@ -84,6 +84,14 @@ def dashboard_app(tmp_path: Path) -> FastAPI:
                 chat_id="oc_workspace",
                 bindings=[
                     SessionBinding(
+                        agent_id="organizer",
+                        lark_app_id="cli_organizer",
+                        chat_id="oc_workspace",
+                        root_message_id="om_organizer_group",
+                        session_id="session-organizer",
+                        session_scope="group",
+                    ),
+                    SessionBinding(
                         agent_id="maker",
                         lark_app_id="cli_maker",
                         chat_id="oc_workspace",
@@ -114,6 +122,22 @@ def dashboard_app(tmp_path: Path) -> FastAPI:
     asyncio.run(seed())
     runtime_service = DashboardRuntime(
         [
+            {
+                "sessionId": "session-organizer",
+                "larkAppId": "cli_organizer",
+                "chatId": "oc_workspace",
+                "rootMessageId": "om_organizer_group",
+                "status": "idle",
+                "workingDir": str(tmp_path),
+            },
+            {
+                "sessionId": "organizer-user-turn",
+                "larkAppId": "cli_organizer",
+                "chatId": "oc_workspace",
+                "rootMessageId": "om_user_message",
+                "status": "working",
+                "workingDir": str(tmp_path),
+            },
             {
                 "sessionId": "session-maker",
                 "larkAppId": "cli_maker",
@@ -189,6 +213,17 @@ def test_workspace_sessions_include_missing_and_unregistered_sessions(tmp_path: 
     assert sessions["session-extra"]["registered"] is False
     assert sessions["session-extra"]["requires_attention"] is True
     assert "other-workspace" not in sessions
+
+
+def test_workspace_sessions_register_organizer_turns_by_group_scope(tmp_path: Path) -> None:
+    with TestClient(dashboard_app(tmp_path)) as client:
+        response = client.get("/api/v1/workspaces/arbitrary-flow/sessions")
+
+    sessions = {session["session_id"]: session for session in response.json()}
+    organizer_turn = sessions["organizer-user-turn"]
+    assert organizer_turn["agent_id"] == "organizer"
+    assert organizer_turn["registered"] is True
+    assert organizer_turn["session_scope"] == "group"
 
 
 def test_workspace_activity_exposes_semantic_event_fields_without_log_ids(

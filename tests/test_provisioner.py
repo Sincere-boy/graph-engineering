@@ -41,6 +41,7 @@ class FakeAdmin:
         self.profile_entries: dict[tuple[str, str], str] = {}
         self.configured: list[str] = []
         self.groups = 0
+        self.group_sessions = 0
         self.topics = 0
         self.memberships = 0
         self.applied: list[str] = []
@@ -82,9 +83,38 @@ class FakeAdmin:
         self.topics += 1
         return f"om_{app_id}", f"session-{app_id}"
 
+    async def create_group_session(
+        self,
+        *,
+        app_id: str,
+        chat_id: str,
+        title: str,
+        instruction: str,
+        idempotency_key: str,
+    ) -> tuple[str, str]:
+        self.group_sessions += 1
+        return chat_id, f"group-session-{app_id}"
+
 
 @pytest.mark.asyncio
-async def test_provision_is_idempotent_and_creates_one_topic_per_agent(tmp_path: Path) -> None:
+async def test_provision_uses_group_session_for_organizer_and_topics_for_workers(
+    tmp_path: Path,
+) -> None:
+    config = WorkspaceConfig.from_yaml_text(CONFIG)
+    admin = FakeAdmin()
+
+    result = await Provisioner(tmp_path, admin).provision(config)
+
+    organizer = next(item for item in result.bindings if item.agent_id == "organizer")
+    developer = next(item for item in result.bindings if item.agent_id == "developer")
+    assert admin.group_sessions == 1
+    assert admin.topics == 1
+    assert organizer.session_scope == "group"
+    assert developer.session_scope == "topic"
+
+
+@pytest.mark.asyncio
+async def test_provision_is_idempotent_for_group_and_topic_sessions(tmp_path: Path) -> None:
     config = WorkspaceConfig.from_yaml_text(CONFIG)
     admin = FakeAdmin()
     provisioner = Provisioner(tmp_path, admin)
@@ -104,13 +134,14 @@ async def test_provision_is_idempotent_and_creates_one_topic_per_agent(tmp_path:
     assert admin.groups == 1
     assert admin.memberships == 2
     assert admin.applied == ["app-0", "app-1", "app-0", "app-1"]
-    assert admin.topics == 2
+    assert admin.group_sessions == 1
+    assert admin.topics == 1
     assert {item.agent_id for item in first.bindings} == {"organizer", "developer"}
     assert "flowchart LR" in admin.profile_entries[(first.role_profile_id, "app-0")]
 
 
 @pytest.mark.asyncio
-async def test_provision_reuses_apps_but_creates_a_new_group_and_topics(tmp_path: Path) -> None:
+async def test_provision_reuses_apps_but_creates_new_group_scoped_sessions(tmp_path: Path) -> None:
     config = WorkspaceConfig.from_yaml_text(CONFIG)
     admin = FakeAdmin()
 
@@ -121,13 +152,14 @@ async def test_provision_reuses_apps_but_creates_a_new_group_and_topics(tmp_path
 
     assert admin.created == []
     assert admin.groups == 1
-    assert admin.topics == 2
+    assert admin.group_sessions == 1
+    assert admin.topics == 1
     assert {item.agent_id: item.lark_app_id for item in result.bindings} == {
         "organizer": "existing-organizer",
         "developer": "existing-developer",
     }
     assert {item.root_message_id for item in result.bindings} == {
-        "om_existing-organizer",
+        "chat-1",
         "om_existing-developer",
     }
 
@@ -200,7 +232,8 @@ async def test_concurrent_provisioning_serializes_external_resource_creation(
     assert first == second
     assert len(admin.created) == 2
     assert admin.groups == 1
-    assert admin.topics == 2
+    assert admin.group_sessions == 1
+    assert admin.topics == 1
 
 
 @pytest.mark.asyncio
@@ -215,9 +248,12 @@ async def test_reprovision_refreshes_fixed_topic_protocol_without_new_topics(
     admin.profile_entries.clear()
     await provisioner.provision(config)
 
-    assert admin.topics == 2
+    assert admin.group_sessions == 1
+    assert admin.topics == 1
     assert len(admin.profile_entries) == 2
-    assert all("禁止创建新话题" in prompt for prompt in admin.profile_entries.values())
+    prompts = list(admin.profile_entries.values())
+    assert any("组织者使用群会话，不创建固定话题" in prompt for prompt in prompts)
+    assert any("始终在当前固定话题内协作，禁止创建新话题" in prompt for prompt in prompts)
 
 
 @pytest.mark.asyncio
@@ -258,7 +294,8 @@ states:
 
     updated = await provisioner.provision(second)
 
-    assert admin.topics == 2
+    assert admin.group_sessions == 1
+    assert admin.topics == 1
     assert [binding.agent_id for binding in updated.bindings] == ["organizer"]
     assert updated.bindings[0].root_message_id == original.bindings[0].root_message_id
     assert admin.left == ["app-1"]
@@ -309,7 +346,8 @@ async def test_reprovision_replaces_chat_scope_binding_with_fixed_native_topic(
     assert developer.root_message_id.startswith("om_")
     assert developer.root_message_id != repaired.chat_id
     assert developer.session_id != "chat-scope-session"
-    assert admin.topics == 3
+    assert admin.group_sessions == 1
+    assert admin.topics == 2
 
 
 @pytest.mark.asyncio
@@ -407,6 +445,51 @@ async def test_group_topic_uses_checkpoint_idempotency_not_invalid_virtual_key()
         if request.url.path.endswith("/card-prefs")
     ]
     assert modes == ["new-topic", "chat-topic"]
+
+
+@pytest.mark.asyncio
+async def test_group_session_trigger_uses_flat_group_presentation_without_topic_mode() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "POST" and request.url.path == "/api/trigger":
+            return httpx.Response(200, json={"target": {"sessionId": "group-session"}})
+        if request.url.path.endswith("/trigger-result"):
+            return httpx.Response(
+                200, json={"state": "completed", "output": {"content": "ok"}}
+            )
+        if request.url.path == "/api/sessions":
+            return httpx.Response(
+                200,
+                json={
+                    "sessions": [
+                        {
+                            "sessionId": "group-session",
+                            "rootMessageId": "om_group_root",
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(request.url.path)
+
+    client = BotmuxAdminClient(
+        "http://botmux.test", token="token", transport=httpx.MockTransport(handler)
+    )
+    root, session = await client.create_group_session(
+        app_id="app",
+        chat_id="oc_group",
+        title="组织者 · workspace",
+        instruction="initialize",
+        idempotency_key="group-key",
+    )
+    await client.close()
+
+    trigger = next(request for request in seen if request.url.path == "/api/trigger")
+    body = __import__("json").loads(trigger.content)
+    assert (root, session) == ("om_group_root", "group-session")
+    assert body["presentation"] == {"topicMessage": "组织者 · workspace"}
+    assert not any(request.url.path.endswith("/card-prefs") for request in seen)
 
 
 @pytest.mark.asyncio
