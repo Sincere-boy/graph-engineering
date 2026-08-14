@@ -65,21 +65,32 @@ graphctl event append passive-qa-e2e \
 graphctl delivery list passive-qa-e2e
 ```
 
-不再参与调度的工作区应显式关闭；关闭会保留配置、Event Log、投递记录和飞书资源，
-但事件扫描、健康检查与异常恢复都会跳过它。只有显式 `resume` 才会重新进入运行态：
+临时停止后台调度但不写业务事件时，使用控制面的 `pause/resume`：
 
 ```bash
-graphctl workspace close passive-qa-e2e
+graphctl workspace pause passive-qa-e2e
 graphctl workspace resume passive-qa-e2e
 ```
 
-组织者也可以通过保留控制事件关闭工作区；后端消费该记录后进入 `closed`。其他 Agent
-无权写入，工作区配置也不能重定义这个状态：
+`closed` 表示带审计记录的业务暂停。关闭会保留配置、Event Log、投递记录、飞书资源和
+关闭前的活动节点；事件扫描、健康检查与异常恢复都会跳过该工作区。组织者可以写入保留
+控制事件关闭工作区，其他 Agent 无权写入，工作区配置也不能重定义这个状态：
 
 ```bash
 graphctl event append passive-qa-e2e \
-  --actor organizer --state closed --message '本工作区验收已结束'
+  --actor organizer --state closed --message '暂时停止当前任务'
 ```
+
+控制面 `workspace close` 也会原子记录同一种 `closed` 审计事件。恢复时不能使用裸
+`resume`，必须由组织者在收到用户明确指令后执行 `reopen`：
+
+```bash
+graphctl workspace reopen passive-qa-e2e --message '继续原任务'
+```
+
+`reopen` 不接受 Agent 参数。后端追加引用原 `closed` 事件的 `reopened` 控制事件，恢复
+关闭前保存的活动节点，并由冻结配置形成的原路由继续投递。Event Log 先持久化，运行态
+随后切换；若两步之间进程退出，重试会复用已经存在的 `reopened` 事件，不会重复追加。
 
 工作区进入 `completed` 后仍可开始新一轮任务。恢复事件必须由组织者写入一个配置中
 `allowed_writers` 包含组织者且 action 为 `activate` 的状态；目标 Agent 继续由配置决定：
@@ -92,8 +103,9 @@ graphctl event append passive-qa-e2e \
   --actor organizer --state pending_development --message '下一轮任务说明'
 ```
 
-恢复操作会保留上一轮完整 Event Log，追加新的审计事件，并从该事件继续消费；裸
-`workspace resume` 仍只用于尚未完成的 registered/paused 工作区。
+新一轮操作会保留上一轮完整 Event Log，追加新的审计事件，并从该事件继续消费；裸
+`workspace resume` 只用于尚未完成的 registered/paused 工作区，`closed` 必须使用
+`workspace reopen`。
 
 `workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，默认
 创建全新应用；指定 `--reuse-bots-from` 时按稳定 Agent ID 复用来源工作区的应用身份，但

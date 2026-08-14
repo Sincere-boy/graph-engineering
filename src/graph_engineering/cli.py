@@ -77,6 +77,8 @@ async def _append_workspace_event(
     event_id: str | None = None,
 ) -> tuple[Event, int]:
     await registry._initialize()
+    if state == "reopened":
+        raise ConfigError("reopened is engine-managed; use graphctl workspace reopen")
     config = registry.load_config(workspace_id)
     runtime = await registry.storage.get_runtime(workspace_id)
     if runtime is None or runtime.status not in {"running", "completed"}:
@@ -285,6 +287,30 @@ def resume_workspace(
                 ensure_ascii=False,
             )
         )
+
+
+@workspace_app.command("reopen")
+def reopen_workspace(
+    workspace_id: str,
+    message: Annotated[str, typer.Option(help="Auditable reason for resuming the suspended task")],
+    control_dir: ControlDir = DEFAULT_CONTROL_DIR,
+) -> None:
+    try:
+        runtime, event, cursor = _run(
+            _registry(control_dir).reopen(workspace_id, message)
+        )
+    except Exception as exc:
+        _fail(exc)
+    typer.echo(
+        json.dumps(
+            {
+                "runtime": runtime.model_dump(mode="json"),
+                "event_id": event.event_id,
+                "cursor": cursor,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 @workspace_app.command("status")

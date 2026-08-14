@@ -48,7 +48,16 @@ def test_config_accepts_arbitrary_agents_states_and_cycles(tmp_path: Path) -> No
 
 @pytest.mark.parametrize(
     "reserved",
-    ["human_required", "human_resolved", "closed", "待人工", "人工已处理", "关闭"],
+    [
+        "human_required",
+        "human_resolved",
+        "closed",
+        "reopened",
+        "待人工",
+        "人工已处理",
+        "关闭",
+        "重新打开",
+    ],
 )
 def test_config_rejects_reserved_human_states(tmp_path: Path, reserved: str) -> None:
     raw = valid_config(tmp_path)

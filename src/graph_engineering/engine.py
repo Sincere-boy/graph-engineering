@@ -48,6 +48,27 @@ class StateGraphEngine:
                 event_ids=[event.event_id for event in events],
                 state_id=state_id,
             )
+        if state_id == "reopened":
+            if any(event.actor_id != "organizer" for event in events):
+                raise AuthorizationError("only organizer may reopen a workspace")
+            cause_id = events[-1].causation_id
+            if not cause_id:
+                raise ValueError("reopened requires causation_id")
+            original = (event_lookup or {}).get(cause_id)
+            if original is None or original.state_id != "closed":
+                raise ValueError("causation_id must reference a closed event")
+            self._validate_identity(original)
+            if expected_active_node is None:
+                raise ValueError("reopened requires a suspended active node")
+            return RouteDecision(
+                action="activate",
+                active_node=expected_active_node,
+                target_agent=(
+                    "organizer" if expected_active_node == "human" else expected_active_node
+                ),
+                event_ids=[event.event_id for event in events],
+                state_id=state_id,
+            )
         self._validate_turn(events, expected_active_node)
 
         if state_id == "human_required":

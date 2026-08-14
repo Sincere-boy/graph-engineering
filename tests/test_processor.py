@@ -358,4 +358,55 @@ async def test_processor_closes_workspace_from_organizer_control_event(tmp_path:
     runtime = await storage.get_runtime(config.workspace.id)
     assert runtime.status == "closed"
     assert runtime.active_node is None
+    assert runtime.suspended_node == "checker"
     assert runtime.cursor > 0
+
+
+@pytest.mark.asyncio
+async def test_processor_dispatches_reopen_to_suspended_active_node(tmp_path: Path) -> None:
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    storage = SQLiteStorage(tmp_path / "reopened.db")
+    await storage.initialize()
+    log = EventLog(tmp_path / "reopened.jsonl")
+    close_cursor = log.append(
+        Event(
+            event_id="close-event",
+            workspace_id=config.workspace.id,
+            config_version=1,
+            actor_id="organizer",
+            state_id="closed",
+            message="pause this workspace",
+        )
+    )
+    end_cursor = log.append(
+        Event(
+            event_id="reopen-event",
+            workspace_id=config.workspace.id,
+            config_version=1,
+            actor_id="organizer",
+            state_id="reopened",
+            message="continue the original task",
+            causation_id="close-event",
+        )
+    )
+    await storage.save_runtime(
+        WorkspaceRuntime(
+            workspace_id=config.workspace.id,
+            config_version=1,
+            config_hash=config.content_hash,
+            status="running",
+            cursor=close_cursor,
+            event_log_identity=log.file_identity(),
+            active_node="maker",
+        )
+    )
+    dispatcher = RecordingDispatcher()
+
+    await WorkspaceProcessor(storage, dispatcher).process(config, log)
+
+    runtime = await storage.get_runtime(config.workspace.id)
+    assert runtime.status == "running"
+    assert runtime.active_node == "maker"
+    assert runtime.cursor == end_cursor
+    assert len(dispatcher.deliveries) == 1
+    assert dispatcher.deliveries[0][1].target_agent == "maker"
