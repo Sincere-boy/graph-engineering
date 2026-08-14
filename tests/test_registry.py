@@ -18,6 +18,8 @@ def test_organizer_prompt_uses_group_and_workers_use_fixed_topics(tmp_path: Path
     assert "组织者使用群会话，不创建固定话题" in organizer
     assert "收到用户需求时不要直接 @ 任何执行 Agent" in organizer
     assert "后端会再次调用组织者群 Session" in organizer
+    assert "收到用户明确恢复指令" in organizer
+    assert "graphctl workspace reopen arbitrary-flow --message" in organizer
     assert "始终在当前固定话题内协作" in worker
 
 
@@ -92,7 +94,9 @@ async def test_completed_workspace_cannot_be_reopened_via_pause(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_closed_workspace_stops_until_explicit_resume(tmp_path: Path) -> None:
+async def test_closed_workspace_cannot_bypass_audited_reopen_with_resume(
+    tmp_path: Path,
+) -> None:
     registry = WorkspaceRegistry(tmp_path / "control")
     config = WorkspaceConfig.model_validate(valid_config(tmp_path))
     await registry.register(config)
@@ -104,7 +108,80 @@ async def test_closed_workspace_stops_until_explicit_resume(tmp_path: Path) -> N
     assert (await registry.close(config.workspace.id)).status == "closed"
     with pytest.raises(ConfigError, match="closed"):
         await registry.pause(config.workspace.id)
-    assert (await registry.resume(config.workspace.id)).status == "running"
+    with pytest.raises(ConfigError, match="reopen"):
+        await registry.resume(config.workspace.id)
+
+
+@pytest.mark.asyncio
+async def test_control_plane_close_records_audit_event_and_suspended_node(
+    tmp_path: Path,
+) -> None:
+    registry = WorkspaceRegistry(tmp_path / "control")
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    await registry.register(config)
+    runtime = await registry.resume(config.workspace.id)
+    runtime.active_node = "checker"
+    await registry.storage.save_runtime(runtime)
+
+    closed = await registry.close(config.workspace.id)
+
+    events, end_cursor = registry.event_log(config.workspace.id).read_from(0)
+    assert len(events) == 1
+    assert events[0].actor_id == "organizer"
+    assert events[0].state_id == "closed"
+    assert closed.status == "closed"
+    assert closed.active_node is None
+    assert closed.suspended_node == "checker"
+    assert closed.cursor == end_cursor
+
+
+@pytest.mark.asyncio
+async def test_reopen_retry_finishes_persisted_audit_event_without_duplicate(
+    tmp_path: Path,
+) -> None:
+    registry = WorkspaceRegistry(tmp_path / "control")
+    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
+    runtime = await registry.register(config)
+    log = registry.event_log(config.workspace.id)
+    close_cursor = log.append(
+        Event(
+            event_id="close-1",
+            workspace_id=config.workspace.id,
+            config_version=1,
+            actor_id="organizer",
+            state_id="closed",
+            message="pause",
+        )
+    )
+    end_cursor = log.append(
+        Event(
+            event_id="reopen-1",
+            workspace_id=config.workspace.id,
+            config_version=1,
+            actor_id="organizer",
+            state_id="reopened",
+            message="continue original task",
+            causation_id="close-1",
+        )
+    )
+    runtime.status = "closed"
+    runtime.cursor = close_cursor
+    runtime.event_log_identity = log.file_identity()
+    runtime.suspended_node = "maker"
+    await registry.storage.save_runtime(runtime)
+
+    reopened, event, cursor = await registry.reopen(
+        config.workspace.id,
+        "continue original task",
+    )
+
+    events, _ = log.read_from(0)
+    assert [item.event_id for item in events] == ["close-1", "reopen-1"]
+    assert event.event_id == "reopen-1"
+    assert cursor == end_cursor
+    assert reopened.status == "running"
+    assert reopened.cursor == close_cursor
+    assert reopened.active_node == "maker"
 
 
 @pytest.mark.asyncio
@@ -137,6 +214,8 @@ def test_registry_renders_generic_mermaid_and_agent_prompt(tmp_path: Path) -> No
     assert 'maker["任意制造者"]' in diagram
     assert 'checker["任意检查者"]' in diagram
     assert 'maker -->|"进入检查"| checker' in diagram
+    assert 'closed -->|"重新打开"| suspended' in diagram
+    assert 'suspended["关闭前活动节点"]' in diagram
     assert "graphctl event append" in prompt
     assert "禁止使用 `botmux report`" in prompt
     assert "禁止 @组织者" in prompt

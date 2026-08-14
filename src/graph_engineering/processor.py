@@ -74,6 +74,7 @@ class WorkspaceProcessor:
                 batch.append(entries[index])
                 index += 1
             events = [event for event, _ in batch]
+            previous_active_node = active_node
             try:
                 decision = engine.decide(
                     events,
@@ -120,6 +121,10 @@ class WorkspaceProcessor:
             runtime.cursor = batch[-1][1]
             runtime.active_node = decision.active_node
             active_node = decision.active_node
+            if decision.action == "close":
+                runtime.suspended_node = previous_active_node
+            elif decision.action == "activate":
+                runtime.suspended_node = None
             runtime.last_error = None
             runtime.health = "unknown"
             runtime.updated_at = utc_now()

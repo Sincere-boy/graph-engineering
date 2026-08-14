@@ -57,9 +57,11 @@ RESERVED_STATE_IDS = {
     "human_required",
     "human_resolved",
     "closed",
+    "reopened",
     "待人工",
     "人工已处理",
     "关闭",
+    "重新打开",
 }
 
 
@@ -114,7 +116,8 @@ class WorkspaceConfig(BaseModel):
         if unknown_reserved or reserved_display:
             raise ConfigError(
                 "reserved control states are engine-managed; remove "
-                "human_required/human_resolved/closed/待人工/人工已处理/关闭"
+                "human_required/human_resolved/closed/reopened/"
+                "待人工/人工已处理/关闭/重新打开"
             )
         agent_ids = set(self.agents)
         errors: list[str] = []

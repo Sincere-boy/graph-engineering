@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from graph_engineering.cli import app
 from graph_engineering.eventlog import EventLog
-from graph_engineering.models import Delivery
+from graph_engineering.models import Delivery, Event
 from graph_engineering.storage import SQLiteStorage
 
 runner = CliRunner()
@@ -112,6 +112,140 @@ def test_cli_exposes_workspace_provision_command() -> None:
 
     assert result.exit_code == 0
     assert "provision" in result.stdout
+
+
+def test_cli_reopens_closed_workspace_at_suspended_node_with_audit_event(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "workspace.yaml"
+    config_path.write_text(
+        yaml.safe_dump(valid_config(tmp_path), allow_unicode=True), encoding="utf-8"
+    )
+    control = tmp_path / "control"
+    runner.invoke(
+        app,
+        ["workspace", "register", str(config_path), "--control-dir", str(control)],
+        env=SQLITE_ENV,
+    )
+    log = EventLog(control / "workspaces/arbitrary-flow/eventlog.jsonl")
+    log.append(
+        Event(
+            event_id="begin-1",
+            workspace_id="arbitrary-flow",
+            config_version=1,
+            actor_id="organizer",
+            state_id="begin",
+            message="start writing",
+        )
+    )
+    close_cursor = log.append(
+        Event(
+            event_id="close-1",
+            workspace_id="arbitrary-flow",
+            config_version=1,
+            actor_id="organizer",
+            state_id="closed",
+            message="pause by mistake",
+        )
+    )
+    storage = SQLiteStorage(control / "state.db")
+
+    async def mark_closed() -> None:
+        await storage.initialize()
+        runtime = await storage.get_runtime("arbitrary-flow")
+        runtime.status = "closed"
+        runtime.cursor = close_cursor
+        runtime.active_node = None
+        runtime.event_log_identity = log.file_identity()
+        await storage.save_runtime(runtime)
+
+    asyncio.run(mark_closed())
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "reopen",
+            "arbitrary-flow",
+            "--message",
+            "continue the original writing task",
+            "--control-dir",
+            str(control),
+        ],
+        env=SQLITE_ENV,
+    )
+    events, end_cursor = log.read_from(0)
+    runtime = asyncio.run(storage.get_runtime("arbitrary-flow"))
+
+    assert result.exit_code == 0, result.stderr
+    assert [event.state_id for event in events] == ["begin", "closed", "reopened"]
+    assert events[-1].actor_id == "organizer"
+    assert events[-1].causation_id == "close-1"
+    assert events[-1].message == "continue the original writing task"
+    assert runtime.status == "running"
+    assert runtime.active_node == "maker"
+    assert runtime.cursor == close_cursor
+    assert runtime.cursor < end_cursor
+
+
+def test_cli_rejects_reopened_control_event_through_generic_append(tmp_path: Path) -> None:
+    config_path = tmp_path / "workspace.yaml"
+    config_path.write_text(
+        yaml.safe_dump(valid_config(tmp_path), allow_unicode=True), encoding="utf-8"
+    )
+    control = tmp_path / "control"
+    runner.invoke(
+        app,
+        ["workspace", "register", str(config_path), "--control-dir", str(control)],
+        env=SQLITE_ENV,
+    )
+    log = EventLog(control / "workspaces/arbitrary-flow/eventlog.jsonl")
+    close_cursor = log.append(
+        Event(
+            event_id="old-close",
+            workspace_id="arbitrary-flow",
+            config_version=1,
+            actor_id="organizer",
+            state_id="closed",
+            message="old pause",
+        )
+    )
+    storage = SQLiteStorage(control / "state.db")
+
+    async def seed_running() -> None:
+        await storage.initialize()
+        runtime = await storage.get_runtime("arbitrary-flow")
+        runtime.status = "running"
+        runtime.cursor = close_cursor
+        runtime.active_node = "maker"
+        runtime.event_log_identity = log.file_identity()
+        await storage.save_runtime(runtime)
+
+    asyncio.run(seed_running())
+
+    result = runner.invoke(
+        app,
+        [
+            "event",
+            "append",
+            "arbitrary-flow",
+            "--actor",
+            "organizer",
+            "--state",
+            "reopened",
+            "--message",
+            "forged reopen",
+            "--causation-id",
+            "old-close",
+            "--control-dir",
+            str(control),
+        ],
+        env=SQLITE_ENV,
+    )
+
+    assert result.exit_code != 0
+    assert "workspace reopen" in result.stderr
+    assert len(log.read_from(0)[0]) == 1
 
 
 def test_cli_exposes_workspace_close_command() -> None:

@@ -37,6 +37,7 @@ class WorkspaceRuntime(BaseModel):
     cursor: int = Field(default=0, ge=0)
     event_log_identity: str | None = None
     active_node: str | None = None
+    suspended_node: str | None = None
     health: str = "unknown"
     last_error: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
