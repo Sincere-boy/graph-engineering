@@ -30,6 +30,13 @@
 
 ## 安装与启动
 
+首次 clone 后，建议让 Codex 读取并执行仓库内的
+[`skills/setup-graph-engineering/SKILL.md`](skills/setup-graph-engineering/SKILL.md)。它负责安装
+`graph-engineering` 主 skill、Botmux、Python 环境、MongoDB 和用户级后端服务，并执行完整
+健康检查；setup skill 自身不安装到全局 Codex 目录。
+
+以下命令是底层手动流程：
+
 ```bash
 conda create -n graph-engineering -c conda-forge python=3.12
 conda run -n graph-engineering pip install -e '.[dev]'
