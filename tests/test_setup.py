@@ -215,7 +215,7 @@ def test_doctor_rejects_incompatible_botmux_version(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     _executable(
         fake_bin / "botmux",
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 3.13.0; fi\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 3.12.0; fi\n",
     )
     home = tmp_path / "home"
     home.mkdir()
@@ -235,7 +235,7 @@ def test_doctor_rejects_incompatible_botmux_version(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 1
-    assert "MISSING botmux-version expected 3.14.0, found 3.13.0" in result.stdout
+    assert "MISSING botmux-version expected 3.13.0, found 3.12.0" in result.stdout
 
 
 def test_doctor_requires_complete_repository_layout(tmp_path: Path) -> None:
@@ -266,10 +266,12 @@ def test_doctor_requires_python_312_in_conda_environment(tmp_path: Path) -> None
         """#!/usr/bin/env bash
 if [[ "$*" == "env list" ]]; then
   printf 'graph-engineering /fake/env\\n'
-elif [[ "$*" == "run -n graph-engineering python --version" ]]; then
-  printf 'Python 3.11.9\\n'
 fi
 """,
+    )
+    _executable(
+        root / "miniconda3/envs/graph-engineering/bin/python",
+        "#!/bin/sh\nprintf 'Python 3.11.9\\n'\n",
     )
 
     result = subprocess.run(

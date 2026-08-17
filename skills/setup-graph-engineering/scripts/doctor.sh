@@ -11,6 +11,7 @@ GE_REPOSITORY_DIR="${1:-$(cd -- "$GE_DOCTOR_SCRIPT_DIR/../../.." && pwd)}"
 GE_ROOT_DIR="${GE_ROOT_DIR:-$HOME/.graph_engineering}"
 GE_CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 GE_CONDA_BIN="${GE_CONDA_BIN:-$GE_ROOT_DIR/miniconda3/bin/conda}"
+GE_PYTHON_BIN="$GE_ROOT_DIR/miniconda3/envs/graph-engineering/bin/python"
 GE_GRAPHCTL_BIN="$GE_ROOT_DIR/miniconda3/envs/graph-engineering/bin/graphctl"
 GE_EXPECTED_SKILL="$GE_REPOSITORY_DIR/skills/graph-engineering"
 GE_INSTALLED_SKILL="$GE_CODEX_HOME/skills/graph-engineering"
@@ -47,10 +48,7 @@ if [[ -x "$GE_CONDA_BIN" ]]; then
   ge_ok conda "$GE_CONDA_BIN"
   if "$GE_CONDA_BIN" env list 2>/dev/null | awk '{print $1}' | grep -qx graph-engineering; then
     ge_ok python-env graph-engineering
-    GE_PYTHON_VERSION="$(
-      "$GE_CONDA_BIN" run -n graph-engineering python --version 2>&1 \
-        | tail -n 1
-    )"
+    GE_PYTHON_VERSION="$("$GE_PYTHON_BIN" --version 2>&1 || true)"
     if [[ "$GE_PYTHON_VERSION" == "Python 3.12."* ]]; then
       ge_ok python-version "$GE_PYTHON_VERSION"
     else
@@ -110,10 +108,10 @@ fi
 if [[ -n "$GE_BOTMUX_CLI" && -x "$GE_BOTMUX_CLI" ]]; then
   ge_ok botmux "$GE_BOTMUX_CLI"
   GE_BOTMUX_VERSION="$("$GE_BOTMUX_CLI" --version 2>/dev/null || true)"
-  if [[ "$GE_BOTMUX_VERSION" == "3.14.0" ]]; then
+  if [[ "$GE_BOTMUX_VERSION" == "3.13.0" ]]; then
     ge_ok botmux-version "$GE_BOTMUX_VERSION"
   else
-    ge_missing botmux-version "expected 3.14.0, found ${GE_BOTMUX_VERSION:-unknown}"
+    ge_missing botmux-version "expected 3.13.0, found ${GE_BOTMUX_VERSION:-unknown}"
   fi
   if "$GE_BOTMUX_CLI" status >/dev/null 2>&1; then
     ge_ok botmux-daemon running

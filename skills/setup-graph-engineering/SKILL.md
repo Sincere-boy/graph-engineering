@@ -13,7 +13,7 @@ Configure a cloned Graph Engineering repository into a working local installatio
 - Node.js 22 or newer and npm.
 - Docker Engine with Compose v2, reachable by the current user.
 - Miniconda installed at `~/.graph_engineering/miniconda3`.
-- Botmux `3.14.0` with a completed Feishu setup.
+- Botmux `3.13.0` with a completed Feishu setup.
 
 If the host does not match this target, report the unsupported constraint and stop instead of inventing another service topology. Do not expose Docker, MongoDB, Botmux Dashboard, or the Graph Engineering API beyond localhost.
 
@@ -34,7 +34,7 @@ If the host does not match this target, report the unsupported constraint and st
 4. Install Botmux at the pinned compatible version when it is absent or different:
 
    ```bash
-   npm install --global botmux@3.14.0
+   npm install --global botmux@3.13.0
    botmux --version
    ```
 
