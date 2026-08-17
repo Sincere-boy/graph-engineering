@@ -38,10 +38,10 @@ class WorkspaceRegistry:
         workspace_id = config.workspace.id
         current = await self.storage.get_runtime(workspace_id)
         if current and current.config_hash != config.content_hash:
-            if current.status != "paused":
-                raise ConfigError("workspace must be paused before configuration changes")
+            if current.status != "closed":
+                raise ConfigError("workspace must be closed before configuration changes")
             if config.workspace.version <= current.config_version:
-                raise ConfigError("new configuration version must increase after a paused update")
+                raise ConfigError("new configuration version must increase after a closed update")
         if current and current.config_hash == config.content_hash:
             return current
 
@@ -69,20 +69,23 @@ class WorkspaceRegistry:
             current.active_node in config.agents or current.active_node == "human"
         ):
             active_node = current.active_node
+        suspended_node = None
+        if current is not None and (
+            current.suspended_node in config.agents or current.suspended_node == "human"
+        ):
+            suspended_node = current.suspended_node
         runtime = WorkspaceRuntime(
             workspace_id=workspace_id,
             config_version=config.workspace.version,
             config_hash=config.content_hash,
-            status="registered" if current is None else "paused",
+            status="registered" if current is None else "closed",
             cursor=cursor,
             event_log_identity=event_log_identity,
             active_node=active_node,
+            suspended_node=suspended_node,
         )
         await self.storage.save_runtime(runtime)
         return runtime
-
-    async def pause(self, workspace_id: str) -> WorkspaceRuntime:
-        return await self._set_status(workspace_id, "paused")
 
     async def resume(self, workspace_id: str) -> WorkspaceRuntime:
         return await self._set_status(workspace_id, "running")
@@ -217,7 +220,7 @@ class WorkspaceRegistry:
         if runtime is None:
             raise ConfigError(f"unknown workspace: {workspace_id}")
         if runtime.status == "completed":
-            raise ConfigError("completed workspace cannot be paused or resumed")
+            raise ConfigError("completed workspace requires an organizer restart event")
         if runtime.status == "closed":
             raise ConfigError("closed workspace requires an audited workspace reopen")
         runtime.status = status
@@ -243,13 +246,11 @@ class WorkspaceRegistry:
             lines.append(f'    {node}["{label}"]')
         lines.append('    human{{"人工"}}')
         lines.append('    completed(("完成"))')
-        lines.append('    paused(("暂停"))')
         lines.append('    closed(("关闭"))')
         lines.append('    suspended["关闭前活动节点"]')
         for state in config.states.values():
             destination = {
                 "complete": "completed",
-                "pause": "paused",
                 "activate": self._mermaid_id(state.action.target or ""),
             }[state.action.type]
             label = state.display_name.replace('"', "'")
@@ -272,7 +273,7 @@ class WorkspaceRegistry:
         ]
         state_lines = "\n".join(f"- `{state_id}`：{name}" for state_id, name in writable)
         if agent_id == "organizer":
-            state_lines += "\n- `closed`：关闭并暂停工作区（引擎保留控制事件）"
+            state_lines += "\n- `closed`：关闭工作区（引擎保留控制事件）"
         skill_lines = "\n".join(f"- `{skill}`" for skill in agent.skills)
         restart_protocol = (
             "\n\n工作区处于 completed 时，你可以通过上述命令写入一个配置允许组织者写入的 "

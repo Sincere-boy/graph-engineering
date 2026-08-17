@@ -24,7 +24,7 @@ def test_organizer_prompt_uses_group_and_workers_use_fixed_topics(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_registry_freezes_active_config_and_versions_paused_updates(tmp_path: Path) -> None:
+async def test_registry_freezes_active_config_and_versions_closed_updates(tmp_path: Path) -> None:
     registry = WorkspaceRegistry(tmp_path / "control")
     first = WorkspaceConfig.model_validate(valid_config(tmp_path))
 
@@ -36,10 +36,10 @@ async def test_registry_freezes_active_config_and_versions_paused_updates(tmp_pa
     changed_raw["agents"]["maker"]["prompt"] = "changed"
     changed = WorkspaceConfig.model_validate(changed_raw)
 
-    with pytest.raises(ConfigError, match="paused"):
+    with pytest.raises(ConfigError, match="closed"):
         await registry.register(changed)
 
-    await registry.pause(first.workspace.id)
+    await registry.close(first.workspace.id)
     with pytest.raises(ConfigError, match="version"):
         await registry.register(changed)
 
@@ -49,7 +49,9 @@ async def test_registry_freezes_active_config_and_versions_paused_updates(tmp_pa
 
     assert runtime.config_hash == first.content_hash
     assert updated.config_version == 2
-    assert updated.active_node == "maker"
+    assert updated.status == "closed"
+    assert updated.active_node is None
+    assert updated.suspended_node == "maker"
     assert (registry.workspace_dir(first.workspace.id) / "config-v1.yaml").exists()
     assert (registry.workspace_dir(first.workspace.id) / "config-v2.yaml").exists()
 
@@ -70,27 +72,22 @@ async def test_new_config_version_starts_after_existing_event_log(tmp_path: Path
             message="old version",
         )
     )
-    await registry.pause(first.workspace.id)
+    active = await registry.storage.get_runtime(first.workspace.id)
+    assert active is not None
+    active.status = "running"
+    active.cursor = end
+    active.event_log_identity = event_log.file_identity()
+    active.active_node = "maker"
+    await registry.storage.save_runtime(active)
+    closed = await registry.close(first.workspace.id)
     changed_raw = valid_config(tmp_path)
     changed_raw["workspace"]["version"] = 2
     changed_raw["agents"]["maker"]["prompt"] = "version two"
 
     runtime = await registry.register(WorkspaceConfig.model_validate(changed_raw))
 
-    assert runtime.cursor == end
+    assert runtime.cursor == closed.cursor
     assert runtime.event_log_identity == event_log.file_identity()
-
-
-@pytest.mark.asyncio
-async def test_completed_workspace_cannot_be_reopened_via_pause(tmp_path: Path) -> None:
-    registry = WorkspaceRegistry(tmp_path / "control")
-    config = WorkspaceConfig.model_validate(valid_config(tmp_path))
-    runtime = await registry.register(config)
-    runtime.status = "completed"
-    await registry.storage.save_runtime(runtime)
-
-    with pytest.raises(ConfigError, match="completed"):
-        await registry.pause(config.workspace.id)
 
 
 @pytest.mark.asyncio
@@ -106,8 +103,6 @@ async def test_closed_workspace_cannot_bypass_audited_reopen_with_resume(
 
     assert closed.status == "closed"
     assert (await registry.close(config.workspace.id)).status == "closed"
-    with pytest.raises(ConfigError, match="closed"):
-        await registry.pause(config.workspace.id)
     with pytest.raises(ConfigError, match="reopen"):
         await registry.resume(config.workspace.id)
 
@@ -191,7 +186,7 @@ async def test_config_update_does_not_publish_snapshot_when_event_log_is_corrupt
     registry = WorkspaceRegistry(tmp_path / "control")
     first = WorkspaceConfig.model_validate(valid_config(tmp_path))
     await registry.register(first)
-    await registry.pause(first.workspace.id)
+    await registry.close(first.workspace.id)
     registry.event_log(first.workspace.id).path.write_text("{truncated", encoding="utf-8")
     changed_raw = valid_config(tmp_path)
     changed_raw["workspace"]["version"] = 2
@@ -216,6 +211,8 @@ def test_registry_renders_generic_mermaid_and_agent_prompt(tmp_path: Path) -> No
     assert 'maker -->|"进入检查"| checker' in diagram
     assert 'closed -->|"重新打开"| suspended' in diagram
     assert 'suspended["关闭前活动节点"]' in diagram
+    assert "paused" not in diagram
+    assert "暂停" not in diagram
     assert "graphctl event append" in prompt
     assert "禁止使用 `botmux report`" in prompt
     assert "禁止 @组织者" in prompt

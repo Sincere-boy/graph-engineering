@@ -34,7 +34,7 @@ class AgentConfig(BaseModel):
 class StateAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["activate", "pause", "complete"]
+    type: Literal["activate", "complete"]
     target: str | None = None
 
 

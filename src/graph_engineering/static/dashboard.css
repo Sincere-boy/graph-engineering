@@ -103,7 +103,7 @@ h2 { margin-bottom: 0; font-size: 18px; letter-spacing: -.02em; }
 .workspace-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .status-dot.running, .status-dot.healthy { background: var(--accent); box-shadow: 0 0 8px rgba(114,242,181,.5); }
-.status-dot.paused, .status-dot.registered, .status-dot.needs_attention { background: var(--warning); }
+.status-dot.registered, .status-dot.needs_attention { background: var(--warning); }
 .status-dot.unhealthy, .status-dot.degraded, .status-dot.failed { background: var(--danger); }
 
 .detail-column { min-width: 0; display: grid; gap: 18px; }
@@ -118,7 +118,7 @@ h2 { margin-bottom: 0; font-size: 18px; letter-spacing: -.02em; }
 .title-row h2 { font-size: 26px; }
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; background: rgba(255,255,255,.05); color: var(--muted); font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
 .badge.running, .badge.healthy, .badge.ready, .badge.working, .badge.idle { color: var(--accent); background: var(--accent-soft); }
-.badge.paused, .badge.registered, .badge.needs_attention { color: var(--warning); background: rgba(244,196,109,.1); }
+.badge.registered, .badge.needs_attention { color: var(--warning); background: rgba(244,196,109,.1); }
 .badge.closed { color: var(--muted); background: rgba(255,255,255,.04); }
 .badge.unhealthy, .badge.degraded, .badge.failed, .badge.missing, .badge.offline { color: var(--danger); background: rgba(255,122,121,.1); }
 .repository { margin: 10px 0 0; color: var(--muted); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }

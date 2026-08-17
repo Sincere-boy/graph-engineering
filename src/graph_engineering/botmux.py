@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -23,6 +24,8 @@ class BotmuxClient:
         transport: httpx.AsyncBaseTransport | None = None,
         poll_interval: float = 2,
         max_polls: int = 900,
+        send_timeout: float = 60,
+        botmux_command: str = "botmux",
     ):
         cookies = {"botmux_dashboard_token": token} if token else None
         self.client = httpx.AsyncClient(
@@ -34,9 +37,61 @@ class BotmuxClient:
         )
         self.poll_interval = poll_interval
         self.max_polls = max_polls
+        self.send_timeout = send_timeout
+        self.botmux_command = botmux_command
 
     async def close(self) -> None:
         await self.client.aclose()
+
+    async def send_session_message(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        delivery_id: str,
+    ) -> str:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.botmux_command,
+                "send",
+                "--session-id",
+                session_id,
+                "--no-mention",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise BotmuxError(
+                f"botmux executable is unavailable: {self.botmux_command}"
+            ) from exc
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(content.encode()), timeout=self.send_timeout
+            )
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise DeliveryUncertain(
+                f"botmux send timed out with an unknown result for {delivery_id}"
+            ) from exc
+        if process.returncode != 0:
+            detail = stderr.decode(errors="replace").strip()
+            raise DeliveryUncertain(
+                f"botmux send result is uncertain for {delivery_id}: {detail}"
+            )
+        try:
+            receipt = json.loads(stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DeliveryUncertain(
+                f"botmux send returned an invalid receipt for {delivery_id}"
+            ) from exc
+        message_id = receipt.get("messageId") if isinstance(receipt, dict) else None
+        if not isinstance(message_id, str) or not message_id.startswith("om_"):
+            raise DeliveryUncertain(
+                f"botmux send omitted a valid Feishu message id for {delivery_id}"
+            )
+        return message_id
 
     async def trigger_session(
         self,

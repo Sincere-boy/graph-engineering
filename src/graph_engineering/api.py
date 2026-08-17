@@ -105,7 +105,6 @@ def create_app(
                 labels = {
                     "human": "人工",
                     "completed": "完成",
-                    "paused": "暂停",
                     "closed": "关闭",
                 }
                 agent = config.agents.get(node_id)
@@ -142,10 +141,7 @@ def create_app(
                     elif state_config.action.type == "activate":
                         target_id = state_config.action.target
                     else:
-                        target_id = {
-                            "complete": "completed",
-                            "pause": "paused",
-                        }[state_config.action.type]
+                        target_id = "completed"
                 activity.append(
                     {
                         "actor": actor,
@@ -184,8 +180,8 @@ def create_app(
         visible_active_node = runtime.active_node
         if runtime.status == "closed":
             visible_active_node = "closed"
-        elif visible_active_node is None and runtime.status in {"paused", "completed"}:
-            visible_active_node = runtime.status
+        elif visible_active_node is None and runtime.status == "completed":
+            visible_active_node = "completed"
         nodes = [
             {
                 "id": agent_id,
@@ -210,12 +206,6 @@ def create_app(
                     "active": visible_active_node == "completed",
                 },
                 {
-                    "id": "paused",
-                    "label": "暂停",
-                    "kind": "terminal",
-                    "active": visible_active_node == "paused",
-                },
-                {
                     "id": "closed",
                     "label": "关闭",
                     "kind": "terminal",
@@ -225,10 +215,7 @@ def create_app(
         )
         edges = []
         for state_id, state in config.states.items():
-            target = state.action.target or {
-                "complete": "completed",
-                "pause": "paused",
-            }[state.action.type]
+            target = state.action.target or "completed"
             edges.extend(
                 {
                     "source": writer,

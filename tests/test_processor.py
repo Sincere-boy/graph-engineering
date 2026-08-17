@@ -67,7 +67,7 @@ async def test_processor_persists_intent_before_dispatch_and_advances_cursor(
 
 
 @pytest.mark.asyncio
-async def test_pause_during_delivery_is_not_overwritten_by_stale_runtime(tmp_path: Path) -> None:
+async def test_close_during_delivery_is_not_overwritten_by_stale_runtime(tmp_path: Path) -> None:
     config = WorkspaceConfig.model_validate(valid_config(tmp_path))
     storage = SQLiteStorage(tmp_path / "state.db")
     await storage.initialize()
@@ -104,14 +104,14 @@ async def test_pause_during_delivery_is_not_overwritten_by_stale_runtime(tmp_pat
     processor = WorkspaceProcessor(storage, dispatcher)
     task = asyncio.create_task(processor.process(config, log))
     await started.wait()
-    paused = await storage.get_runtime(config.workspace.id)
-    paused.status = "paused"
-    await storage.save_runtime(paused)
+    closed = await storage.get_runtime(config.workspace.id)
+    closed.status = "closed"
+    await storage.save_runtime(closed)
     release.set()
     await task
 
     saved = await storage.get_runtime(config.workspace.id)
-    assert saved.status == "paused"
+    assert saved.status == "closed"
     assert saved.cursor == 0
 
     saved.status = "running"

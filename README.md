@@ -5,10 +5,14 @@
 
 ## 不变量
 
-- 配置以版本和 SHA-256 内容哈希冻结；变更前必须暂停工作区并递增版本。
+- 配置以版本和 SHA-256 内容哈希冻结；变更前必须关闭工作区并递增版本。
 - Event Log 是工作区的 append-only 事实源，使用文件锁、完整 JSONL 记录与 `fsync`。
 - 服务端消费前再次校验 actor、状态、版本与人工事件因果关系。
-- 路由只由冻结配置决定；组织者只能做摘要和可见投递，不能自行选择目标。
+- 路由只由冻结配置决定；组织者负责语义摘要，后端负责可见投递，组织者不能自行选择目标。
+- `human_required` 由后端直接通过登记的组织者群 Session 发送待人工消息并记录真实
+  Feishu `message_id`；不再启动一个与 HTTP 响应模式冲突的组织者 LLM 回合。
+- 工作区完成时，后端先调用组织者生成结构化通知正文，再通过登记的组织者群 Session
+  发送正文并记录真实 Feishu `message_id`；组织者回合不调用 `botmux send`。
 - 组织者绑定工作区群 Session，不创建固定话题；用户在群内 @组织者产生的会话由该群范围覆盖。
   其他 Agent 以 `(workspace_id, agent_id)` 为稳定身份：初始化时各创建一个原生固定话题和
   session，后续投递只允许复用登记的 `root_message_id`/`session_id`。
@@ -65,14 +69,7 @@ graphctl event append passive-qa-e2e \
 graphctl delivery list passive-qa-e2e
 ```
 
-临时停止后台调度但不写业务事件时，使用控制面的 `pause/resume`：
-
-```bash
-graphctl workspace pause passive-qa-e2e
-graphctl workspace resume passive-qa-e2e
-```
-
-`closed` 表示带审计记录的业务暂停。关闭会保留配置、Event Log、投递记录、飞书资源和
+`closed` 表示带审计记录的关闭状态。关闭会保留配置、Event Log、投递记录、飞书资源和
 关闭前的活动节点；事件扫描、健康检查与异常恢复都会跳过该工作区。组织者可以写入保留
 控制事件关闭工作区，其他 Agent 无权写入，工作区配置也不能重定义这个状态：
 
@@ -104,7 +101,7 @@ graphctl event append passive-qa-e2e \
 ```
 
 新一轮操作会保留上一轮完整 Event Log，追加新的审计事件，并从该事件继续消费；裸
-`workspace resume` 只用于尚未完成的 registered/paused 工作区，`closed` 必须使用
+`workspace resume` 只用于尚未完成的 registered 工作区，`closed` 必须使用
 `workspace reopen`。
 
 `workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，默认
@@ -116,6 +113,9 @@ graphctl event append passive-qa-e2e \
 
 需要人工时，任意非组织者 Agent 写 `human_required`；组织者在收到人工回复后写
 `human_resolved --causation-id <原事件ID>`，引擎恢复原始写入者。
+
+后台服务需要能执行 Botmux CLI；systemd 等非交互环境应显式设置
+`GE_BOTMUX_CLI=/absolute/path/to/botmux`，不要依赖登录 Shell 的 `PATH`。
 
 投递结果为 `needs_reconcile` 时，先从飞书确认已有可见消息，再显式记录证据；该命令
 只更新投递结果，不会重发消息：
