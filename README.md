@@ -1,134 +1,218 @@
-# graph-engineering
+# Graph Engineering
 
-`graph-engineering` 是面向工程 Agent 协作的声明式状态图引擎。状态、角色、写入权限、
-流转边与循环全部来自工作区 YAML；核心代码不认识“研发 / Reviewer / QA”等业务角色。
+Graph Engineering 是一个在本地运行的多 Agent 协作引擎。你用 YAML 定义参与者、状态和流转规则，
+引擎负责校验每次状态变化、保存完整事件记录，并通过 Botmux 和飞书把任务交给下一位 Agent。
 
-## 不变量
+它适合需要明确流程的协作任务，例如“开发 → 评审 → 测试 → 完成”。流程可以循环、等待人工处理，
+也可以在关闭后从原位置继续。路由始终来自已经冻结的配置，组织者不能临时决定把任务交给谁。
 
-- 配置以版本和 SHA-256 内容哈希冻结；变更前必须暂停工作区并递增版本。
-- Event Log 是工作区的 append-only 事实源，使用文件锁、完整 JSONL 记录与 `fsync`。
-- 服务端消费前再次校验 actor、状态、版本与人工事件因果关系。
-- 路由只由冻结配置决定；组织者只能做摘要和可见投递，不能自行选择目标。
-- 组织者绑定工作区群 Session，不创建固定话题；用户在群内 @组织者产生的会话由该群范围覆盖。
-  其他 Agent 以 `(workspace_id, agent_id)` 为稳定身份：初始化时各创建一个原生固定话题和
-  session，后续投递只允许复用登记的 `root_message_id`/`session_id`。
-- Botmux 群回复使用 `chat-topic`；禁止 `new-topic`、`botmux report`、带 `--title` 的
-  dispatch 和顶层回报，避免每次交接 fork 新话题。
-- outbox 意图先于外部投递持久化；结果不明确时进入 `needs_reconcile`，不盲目重发。
-- 健康检查会把同一工作区机器人产生的未登记活跃 session 标记为
-  `needs_attention`，用于发现固定话题协议被破坏。
-- 卡死 watchdog 会在工作区仍为 `running`、活跃 Agent 的登记 session 已停止工作、
-  Event Log 在宽限期内无推进时调用组织者进入异常恢复模式。组织者收到最近 5 条事件，
-  只能在该 Agent 的固定话题催其从中断处继续；恢复投递持久化、幂等、带冷却且最多 3 次。
-- MongoDB 是默认存储；SQLite 只能通过 `GE_STORAGE_BACKEND=sqlite` 显式选择。
-- 业务仓库不保存引擎运行态；配置快照、Event Log 与 checkpoint 位于
-  `~/.graph_engineering/workspaces/<workspace_id>/`。
+## 第一次使用：先 clone，再让 Codex 配环境
 
-## 安装与启动
+先把仓库 clone 到本地：
 
 ```bash
-conda create -n graph-engineering -c conda-forge python=3.12
-conda run -n graph-engineering pip install -e '.[dev]'
-sudo docker compose up -d mongodb
-graphctl service run --control-dir ~/.graph_engineering
+git clone https://github.com/Sincere-boy/graph-engineering.git
+cd graph-engineering
 ```
 
-服务默认只监听 `127.0.0.1:8765`，提供 `/livez`、`/readyz` 和只读的
+然后在这个目录里打开 Codex，把下面这句话发给它：
+
+```text
+请读取 skills/setup-graph-engineering/SKILL.md，按其中流程配置并验收 Graph Engineering 环境。
+```
+
+[`setup-graph-engineering`](skills/setup-graph-engineering/SKILL.md) 会检查并配置：
+
+- 仓库内的日常 [`graph-engineering`](skills/graph-engineering/SKILL.md) skill
+- Node.js 22+ 和 Botmux `3.13.0`
+- Python 3.12 Conda 环境和 `graphctl`
+- Docker Compose MongoDB
+- `graph-engineering.service` 用户级 systemd 服务
+- 本地控制台、`/livez` 和 `/readyz` 健康检查
+
+Botmux 首次配置和飞书网页授权需要你本人完成，skill 会在这里停下来等你。环境配置 skill 只保留在
+仓库里，不会安装到全局 Codex 目录；日常使用的 `graph-engineering` skill 会链接到
+`~/.codex/skills/graph-engineering`，仓库更新后会自动使用最新版。
+
+配置完成后，可以手动再跑一次验收：
+
+```bash
+skills/setup-graph-engineering/scripts/doctor.sh "$(git rev-parse --show-toplevel)"
+```
+
+输出 `READY graph-engineering environment` 才表示环境已经可用。目前自动配置流程支持 Linux
+x86_64 或 aarch64，并要求用户级 systemd、Docker Engine 和 Compose v2 可用。
+
+## 创建一个工作区
+
+环境配置好以后，可以直接告诉 Codex 你需要什么流程，例如：
+
+```text
+请用 graph-engineering 创建一个开发、评审、测试依次执行的工作区；评审或测试不通过时回到开发。
+```
+
+`graph-engineering` skill 会先读取目标仓库，把 Agent、状态、返工路径、人工等待和结束条件画成
+Mermaid 图。你确认图以后，它才会创建隔离 worktree、生成配置、登记工作区并初始化 Botmux 和
+飞书资源。创建到 `provision` 成功为止，不会自行启动任务。
+
+如果你想直接写配置，可以从
+[`examples/passive-qa-e2e.yaml`](examples/passive-qa-e2e.yaml) 开始。配置里最重要的内容有：
+
+- `workspace.id`：工作区的稳定 ID
+- `workspace.version`：配置版本；已登记的内容变化时必须递增
+- `workspace.repository`：Agent 实际工作的绝对路径
+- `agents`：参与流程的 Agent、提示词和 skills
+- `states`：谁可以写入这个状态，以及下一步激活哪个 Agent 或结束任务
+
+完整字段见 [`config-schema.md`](skills/graph-engineering/references/config-schema.md)。配置也可以从
+Markdown 表格生成。
+
+底层命令如下，通常由 skill 代为执行：
+
+```bash
+graphctl config validate /absolute/workspace.yaml
+graphctl workspace register /absolute/workspace.yaml
+graphctl workspace provision <workspace_id>
+```
+
+`provision` 会创建一个飞书群。组织者使用群范围 Session；其他 Agent 按
+`(workspace_id, agent_id)` 各自绑定一个固定话题和 Session。命令可以安全重试，已经创建的资源会
+复用，不会为同一 Agent 反复创建新话题。
+
+如果多个工作区需要使用同一批飞书应用身份，可以显式复用应用；目标工作区仍会获得独立的新群、
+话题和 Session：
+
+```bash
+graphctl workspace provision <workspace_id> \
+  --reuse-bots-from <source_workspace_id>
+```
+
+## 启动任务和推动状态
+
+工作区初始化完成后，单独确认要启动任务，再执行：
+
+```bash
+graphctl workspace resume <workspace_id>
+graphctl event append <workspace_id> \
+  --actor organizer \
+  --state <organizer_writable_state> \
+  --message '任务说明'
+```
+
+之后每位 Agent 只写自己有权写入的状态事件。引擎会再次校验写入者、当前节点和配置版本，再按
+配置选择下一位 Agent。状态事件先写入 Event Log，外部消息投递随后执行；即使进程中断，也能从
+已经记录的位置继续。
+
+需要人工决定时，当前 Agent 写入 `human_required`。后端会直接在组织者所在的飞书群发出通知，
+并保存真实的 Feishu `message_id`。收到人工回复后，组织者写入 `human_resolved`，通过
+`--causation-id` 引用原来的 `human_required` 事件，任务会回到提出问题的 Agent。
+
+## 关闭、恢复和开始下一轮
+
+临时停止一个正在运行的工作区：
+
+```bash
+graphctl workspace close <workspace_id>
+```
+
+关闭操作会追加一条可审计的 `closed` 事件，并保留关闭前的活动节点、配置、Event Log、投递记录和
+飞书资源。关闭期间不会继续扫描事件、检查 Session 或触发卡死恢复。
+
+收到用户明确的继续指令后，用 `reopen` 回到关闭前的节点：
+
+```bash
+graphctl workspace reopen <workspace_id> --message '继续原任务'
+```
+
+`closed` 工作区不能用裸 `resume` 恢复。`reopen` 会引用原来的关闭事件；如果进程恰好在事件写入后
+退出，重试会复用已有事件，不会多写一条。
+
+工作区到达 `completed` 后，可以保留原 Event Log 并开始下一轮。新入口必须是配置中允许组织者
+写入、且 action 为 `activate` 的状态：
+
+```bash
+graphctl workspace resume <workspace_id> \
+  --state <organizer_writable_state> \
+  --message '下一轮任务说明'
+```
+
+## 查看运行情况
+
+后端默认监听 `127.0.0.1:8765`。打开
+[http://127.0.0.1:8765/](http://127.0.0.1:8765/) 可以看到：
+
+- 所有工作区的运行状态和健康状态
+- 当前活动节点和由冻结配置生成的状态图
+- 每个 Agent 登记的固定 Session，以及额外出现的 Session
+- Event Log 中的时间、写入者、状态、目标节点和消息
+
+页面每秒拉取一次数据。服务还提供 `/livez`、`/readyz` 和只读的
 `/api/v1/workspaces...` 查询接口。
 
-启动服务后可直接打开 [http://127.0.0.1:8765/](http://127.0.0.1:8765/) 使用
-Workspace Graph Console。页面会列出全部工作区及运行/健康状态；选择工作区后可查看
-固定 Session 和额外 Session 的实时状态、由冻结配置生成的状态图，以及包含时间、Actor、
-目标节点、状态和消息内容的 Event Log（内部事件 ID 不展示）。图中绿色发光节点代表当前
-活跃节点。页面每 1 秒自动拉取数据，也可手动刷新；前端只更新发生变化的区域，未变化的
-状态图、Event Log、Session 表格和 Workspace 列表不会重复重绘。
-
-在独立 worktree 中开发时，若 Conda 环境的 editable 安装仍指向原仓库，可显式使用当前
-源码启动，避免误用其他 worktree：
+常用命令：
 
 ```bash
-PYTHONPATH=src graphctl service run --control-dir ~/.graph_engineering
+graphctl workspace status <workspace_id>
+graphctl workspace diagram <workspace_id>
+graphctl delivery list <workspace_id>
 ```
 
-## 工作区生命周期
-
-```bash
-graphctl config validate examples/passive-qa-e2e.yaml
-graphctl workspace register examples/passive-qa-e2e.yaml
-graphctl workspace provision passive-qa-e2e
-# 或复用另一个工作区的应用身份，同时创建独立的新群、固定话题和 session
-graphctl workspace provision passive-qa-e2e \
-  --reuse-bots-from provisioned-source-workspace
-graphctl workspace resume passive-qa-e2e
-graphctl event append passive-qa-e2e \
-  --actor organizer --state pending_development --message '实现任务说明'
-graphctl delivery list passive-qa-e2e
-```
-
-临时停止后台调度但不写业务事件时，使用控制面的 `pause/resume`：
-
-```bash
-graphctl workspace pause passive-qa-e2e
-graphctl workspace resume passive-qa-e2e
-```
-
-`closed` 表示带审计记录的业务暂停。关闭会保留配置、Event Log、投递记录、飞书资源和
-关闭前的活动节点；事件扫描、健康检查与异常恢复都会跳过该工作区。组织者可以写入保留
-控制事件关闭工作区，其他 Agent 无权写入，工作区配置也不能重定义这个状态：
-
-```bash
-graphctl event append passive-qa-e2e \
-  --actor organizer --state closed --message '暂时停止当前任务'
-```
-
-控制面 `workspace close` 也会原子记录同一种 `closed` 审计事件。恢复时不能使用裸
-`resume`，必须由组织者在收到用户明确指令后执行 `reopen`：
-
-```bash
-graphctl workspace reopen passive-qa-e2e --message '继续原任务'
-```
-
-`reopen` 不接受 Agent 参数。后端追加引用原 `closed` 事件的 `reopened` 控制事件，恢复
-关闭前保存的活动节点，并由冻结配置形成的原路由继续投递。Event Log 先持久化，运行态
-随后切换；若两步之间进程退出，重试会复用已经存在的 `reopened` 事件，不会重复追加。
-
-工作区进入 `completed` 后仍可开始新一轮任务。恢复事件必须由组织者写入一个配置中
-`allowed_writers` 包含组织者且 action 为 `activate` 的状态；目标 Agent 继续由配置决定：
-
-```bash
-graphctl workspace resume passive-qa-e2e \
-  --state pending_development --message '下一轮任务说明'
-# 等价方式：直接追加同一个组织者事件
-graphctl event append passive-qa-e2e \
-  --actor organizer --state pending_development --message '下一轮任务说明'
-```
-
-新一轮操作会保留上一轮完整 Event Log，追加新的审计事件，并从该事件继续消费；裸
-`workspace resume` 只用于尚未完成的 registered/paused 工作区，`closed` 必须使用
-`workspace reopen`。
-
-`workspace provision` 只通过 botmux Dashboard API 工作：复用已确认的飞书登录态，默认
-创建全新应用；指定 `--reuse-bots-from` 时按稳定 Agent ID 复用来源工作区的应用身份，但
-始终为目标工作区创建独立的新群、组织者群 Session，以及其他 Agent 的固定话题和 session。
-命令会写 Role Profile，并原子保存可恢复 checkpoint。
-重复执行不会重复创建已完成资源；它会重新协调 Bot 配置、群成员与 Role Profile，
-因此协议修复会应用到既有固定话题而不新增话题。
-
-需要人工时，任意非组织者 Agent 写 `human_required`；组织者在收到人工回复后写
-`human_resolved --causation-id <原事件ID>`，引擎恢复原始写入者。
-
-投递结果为 `needs_reconcile` 时，先从飞书确认已有可见消息，再显式记录证据；该命令
-只更新投递结果，不会重发消息：
+投递停在 `needs_reconcile` 时，先去飞书确认消息是否已经出现，再记录已有消息作为证据。这个命令
+只修改投递结果，不会重新发送：
 
 ```bash
 graphctl delivery reconcile <delivery_id> --message-id <om_xxx>
 ```
 
-watchdog 默认等待 300 秒，每次恢复后冷却 300 秒，最多尝试 3 次。可通过
-`GE_STALL_GRACE_SECONDS`、`GE_RECOVERY_COOLDOWN_SECONDS`、
-`GE_RECOVERY_MAX_ATTEMPTS` 调整；不确定投递会停在 `needs_reconcile`，不会自动重发。
+## 数据和故障恢复
 
-## 开发验证
+MongoDB 是默认运行时存储。只有明确设置 `GE_STORAGE_BACKEND=sqlite` 才会使用 SQLite。
+配置快照、Event Log 和 checkpoint 位于：
+
+```text
+~/.graph_engineering/workspaces/<workspace_id>/
+```
+
+业务仓库不保存引擎运行态。配置会按版本和 SHA-256 内容哈希冻结，Event Log 以 append-only JSONL
+保存并在写入时执行文件锁和 `fsync`。外部投递意图会先持久化；结果不明确时进入
+`needs_reconcile`，系统不会盲目重发。
+
+健康检查会报告固定 Session 缺失，以及同一工作区机器人产生的未登记活跃 Session。卡死 watchdog
+默认在 300 秒没有新事件后尝试唤醒当前 Agent，每次间隔 300 秒，最多 3 次。下面这些环境变量可以
+调整阈值：
+
+```text
+GE_STALL_GRACE_SECONDS
+GE_RECOVERY_COOLDOWN_SECONDS
+GE_RECOVERY_MAX_ATTEMPTS
+```
+
+服务异常时先看：
+
+```bash
+systemctl --user status graph-engineering.service
+journalctl --user -u graph-engineering.service
+docker compose -f compose.yaml ps
+```
+
+## 手动安装和开发
+
+日常使用建议走仓库内的环境配置 skill。如果只开发 Python 代码，可以手动准备环境：
+
+```bash
+conda create -n graph-engineering -c conda-forge python=3.12
+conda run -n graph-engineering pip install -e '.[dev]'
+docker compose -f compose.yaml up -d --wait mongodb
+graphctl service run --control-dir ~/.graph_engineering
+```
+
+在独立 worktree 中开发时，如果 editable 安装仍指向另一个 clone，可以显式使用当前源码：
+
+```bash
+PYTHONPATH=src graphctl service run --control-dir ~/.graph_engineering
+```
+
+提交前运行：
 
 ```bash
 ruff check src tests

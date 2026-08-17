@@ -192,6 +192,7 @@ def test_workspace_graph_marks_the_active_node(tmp_path: Path) -> None:
     assert graph["workspace"]["name"] == "arbitrary-flow"
     assert next(node for node in graph["nodes"] if node["id"] == "checker")["active"] is True
     assert next(node for node in graph["nodes"] if node["id"] == "maker")["active"] is False
+    assert all(node["id"] != "paused" for node in graph["nodes"])
     assert {
         "source": "maker",
         "target": "checker",

@@ -579,7 +579,7 @@ def test_cli_validates_new_version_from_version_start_cursor(tmp_path: Path) -> 
         ["workspace", "resume", "arbitrary-flow", "--control-dir", str(control)],
         env=SQLITE_ENV,
     )
-    runner.invoke(
+    first_append = runner.invoke(
         app,
         [
             "event",
@@ -596,26 +596,52 @@ def test_cli_validates_new_version_from_version_start_cursor(tmp_path: Path) -> 
         ],
         env=SQLITE_ENV,
     )
-    runner.invoke(
+    assert first_append.exit_code == 0, first_append.stderr
+    event_log = EventLog(control / "workspaces/arbitrary-flow/eventlog.jsonl")
+    _, first_cursor = event_log.read_from(0)
+    storage = SQLiteStorage(control / "state.db")
+
+    async def mark_first_version_processed() -> None:
+        await storage.initialize()
+        runtime = await storage.get_runtime("arbitrary-flow")
+        assert runtime is not None
+        runtime.cursor = first_cursor
+        runtime.event_log_identity = event_log.file_identity()
+        runtime.active_node = "maker"
+        await storage.save_runtime(runtime)
+
+    asyncio.run(mark_first_version_processed())
+    close_result = runner.invoke(
         app,
-        ["workspace", "pause", "arbitrary-flow", "--control-dir", str(control)],
+        ["workspace", "close", "arbitrary-flow", "--control-dir", str(control)],
         env=SQLITE_ENV,
     )
+    assert close_result.exit_code == 0, close_result.stderr
     second_raw = valid_config(tmp_path)
     second_raw["workspace"]["version"] = 2
     second_raw["states"]["commence"] = second_raw["states"].pop("begin")
     second_path = tmp_path / "v2.yaml"
     second_path.write_text(yaml.safe_dump(second_raw, allow_unicode=True), encoding="utf-8")
-    runner.invoke(
+    register_result = runner.invoke(
         app,
         ["workspace", "register", str(second_path), "--control-dir", str(control)],
         env=SQLITE_ENV,
     )
-    runner.invoke(
+    assert register_result.exit_code == 0, register_result.stderr
+    reopen_result = runner.invoke(
         app,
-        ["workspace", "resume", "arbitrary-flow", "--control-dir", str(control)],
+        [
+            "workspace",
+            "reopen",
+            "arbitrary-flow",
+            "--message",
+            "continue with version two",
+            "--control-dir",
+            str(control),
+        ],
         env=SQLITE_ENV,
     )
+    assert reopen_result.exit_code == 0, reopen_result.stderr
 
     result = runner.invoke(
         app,
@@ -624,9 +650,9 @@ def test_cli_validates_new_version_from_version_start_cursor(tmp_path: Path) -> 
             "append",
             "arbitrary-flow",
             "--actor",
-            "organizer",
+            "maker",
             "--state",
-            "commence",
+            "inspect",
             "--message",
             "version two",
             "--control-dir",
@@ -634,7 +660,7 @@ def test_cli_validates_new_version_from_version_start_cursor(tmp_path: Path) -> 
         ],
         env=SQLITE_ENV,
     )
-    events, _ = EventLog(control / "workspaces/arbitrary-flow/eventlog.jsonl").read_from(0)
+    events, _ = event_log.read_from(0)
 
     assert result.exit_code == 0
-    assert [event.config_version for event in events] == [1, 2]
+    assert [event.config_version for event in events] == [1, 1, 2, 2]

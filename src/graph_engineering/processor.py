@@ -130,7 +130,6 @@ class WorkspaceProcessor:
             runtime.updated_at = utc_now()
             runtime.status = {
                 "activate": "running",
-                "pause": "paused",
                 "complete": "completed",
                 "close": "closed",
             }[decision.action]

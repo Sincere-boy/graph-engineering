@@ -57,7 +57,7 @@ class StateGraphEngine:
             original = (event_lookup or {}).get(cause_id)
             if original is None or original.state_id != "closed":
                 raise ValueError("causation_id must reference a closed event")
-            self._validate_identity(original)
+            self._validate_identity(original, allow_historical_version=True)
             if expected_active_node is None:
                 raise ValueError("reopened requires a suspended active node")
             return RouteDecision(
@@ -135,10 +135,18 @@ class StateGraphEngine:
                 f"active agent is {active_node}; out-of-turn writers: {unexpected}"
             )
 
-    def _validate_identity(self, event: Event) -> None:
+    def _validate_identity(
+        self,
+        event: Event,
+        *,
+        allow_historical_version: bool = False,
+    ) -> None:
         if event.workspace_id != self.config.workspace.id:
             raise ValueError("event workspace does not match configuration")
-        if event.config_version != self.config.workspace.version:
+        version_mismatch = event.config_version != self.config.workspace.version
+        if allow_historical_version:
+            version_mismatch = event.config_version > self.config.workspace.version
+        if version_mismatch:
             raise ValueError("event configuration version does not match active version")
         if event.actor_id not in self.config.agents:
             raise AuthorizationError(f"unknown actor: {event.actor_id}")

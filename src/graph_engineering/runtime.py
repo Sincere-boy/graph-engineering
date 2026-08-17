@@ -276,7 +276,11 @@ async def run_from_environment(control_dir: Path) -> None:
     await storage.initialize()
     registry = WorkspaceRegistry(control_dir, storage)
     base_url, token = _dashboard_connection(control_dir)
-    botmux = BotmuxClient(base_url, token=token)
+    botmux = BotmuxClient(
+        base_url,
+        token=token,
+        botmux_command=os.getenv("GE_BOTMUX_CLI", "botmux"),
+    )
     dispatcher = BotmuxDispatcher(botmux, storage.get_provisioning)
     runtime = RuntimeService(
         registry,

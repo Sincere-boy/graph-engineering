@@ -1,0 +1,4 @@
+interface:
+  display_name: "Graph Engineering"
+  short_description: "声明式工程状态图、botmux 与飞书多 Agent 协作"
+  default_prompt: "使用 $graph-engineering 安装或操作声明式状态图工作区，并完成可恢复的飞书机器人协作验收。"

@@ -164,6 +164,44 @@ def test_health_allows_organizer_sessions_covered_by_group_scope() -> None:
     assert result.status == "healthy"
 
 
+def test_health_ignores_organizer_workdir_but_keeps_executor_check_strict() -> None:
+    organizer = SessionBinding(
+        agent_id="organizer",
+        lark_app_id="cli_org",
+        chat_id="oc_group",
+        root_message_id="oc_group",
+        session_id="session-organizer",
+        session_scope="group",
+    )
+    executor = SessionBinding(
+        agent_id="writer",
+        lark_app_id="cli_writer",
+        chat_id="oc_group",
+        root_message_id="om_writer",
+        session_id="session-writer",
+    )
+
+    result = evaluate_workspace_health(
+        [organizer, executor],
+        {"service": {"status": "online"}},
+        [
+            {
+                "sessionId": "session-organizer",
+                "status": "idle",
+                "workingDir": "/organizer-control-dir",
+            },
+            {
+                "sessionId": "session-writer",
+                "status": "working",
+                "workingDir": "/repo",
+            },
+        ],
+        expected_repository="/repo",
+    )
+
+    assert result.status == "healthy"
+
+
 @pytest.mark.parametrize(
     ("session", "expected"),
     [

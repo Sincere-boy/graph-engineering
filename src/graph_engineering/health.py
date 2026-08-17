@@ -72,7 +72,10 @@ def evaluate_workspace_health(
         status = str(session.get("status", "")).lower()
         if status in inactive_statuses or session.get("quarantined"):
             degraded.append(f"session {binding.session_id} is {status or 'quarantined'}")
-        if session.get("workingDir") != expected_repository:
+        if (
+            binding.agent_id != "organizer"
+            and session.get("workingDir") != expected_repository
+        ):
             attention.append(
                 f"session {binding.session_id} working directory drifted from {expected_repository}"
             )

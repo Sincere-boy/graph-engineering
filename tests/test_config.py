@@ -84,6 +84,14 @@ def test_config_requires_terminal_state(tmp_path: Path) -> None:
         WorkspaceConfig.model_validate(raw)
 
 
+def test_config_rejects_removed_pause_action(tmp_path: Path) -> None:
+    raw = valid_config(tmp_path)
+    raw["states"]["begin"]["action"] = {"type": "pause"}
+
+    with pytest.raises(ValueError, match="pause"):
+        WorkspaceConfig.model_validate(raw)
+
+
 def test_config_yaml_roundtrip_preserves_organizer_protocol_and_hash(tmp_path: Path) -> None:
     first = WorkspaceConfig.model_validate(valid_config(tmp_path))
 

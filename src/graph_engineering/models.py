@@ -22,7 +22,7 @@ class Event(BaseModel):
 
 
 class RouteDecision(BaseModel):
-    action: Literal["activate", "pause", "complete", "close"]
+    action: Literal["activate", "complete", "close"]
     active_node: str | None
     target_agent: str | None = None
     event_ids: list[str]
@@ -33,7 +33,7 @@ class WorkspaceRuntime(BaseModel):
     workspace_id: str
     config_version: int = Field(ge=1)
     config_hash: str
-    status: Literal["registered", "running", "paused", "closed", "completed", "unhealthy"]
+    status: Literal["registered", "running", "closed", "completed", "unhealthy"]
     cursor: int = Field(default=0, ge=0)
     event_log_identity: str | None = None
     active_node: str | None = None

@@ -52,6 +52,31 @@ def test_only_organizer_can_write_engine_managed_closed_event(tmp_path: Path) ->
         engine.decide([make_event("close-2", "maker", "closed")])
 
 
+def test_reopen_can_reference_close_from_previous_config_version(tmp_path: Path) -> None:
+    raw = valid_config(tmp_path)
+    raw["workspace"]["version"] = 2
+    engine = StateGraphEngine(WorkspaceConfig.model_validate(raw))
+    closed = make_event("close-v1", "organizer", "closed")
+    reopened = Event(
+        event_id="reopen-v2",
+        workspace_id="arbitrary-flow",
+        config_version=2,
+        actor_id="organizer",
+        state_id="reopened",
+        message="continue with version two",
+        causation_id=closed.event_id,
+    )
+
+    decision = engine.decide(
+        [reopened],
+        event_lookup={closed.event_id: closed},
+        expected_active_node="maker",
+    )
+
+    assert decision.action == "activate"
+    assert decision.active_node == "maker"
+
+
 def test_consecutive_aggregation_preserves_causal_order() -> None:
     events = [
         make_event("1", "maker", "inspect"),
