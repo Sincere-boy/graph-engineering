@@ -1,4 +1,4 @@
 interface:
-  display_name: "Setup Graph Engineering"
+  display_name: "配置 Graph Engineering 环境"
   short_description: "安装并验收 Graph Engineering 全套本地环境"
   default_prompt: "使用 $setup-graph-engineering 配置并验收当前仓库的完整本地运行环境。"
