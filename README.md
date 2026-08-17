@@ -55,38 +55,6 @@ x86_64 或 aarch64，并要求用户级 systemd、Docker Engine 和 Compose v2 �
 Mermaid 图。你确认图以后，它才会创建隔离 worktree、生成配置、登记工作区并初始化 Botmux 和
 飞书资源。创建到 `provision` 成功为止，不会自行启动任务。
 
-如果你想直接写配置，可以从
-[`examples/passive-qa-e2e.yaml`](examples/passive-qa-e2e.yaml) 开始。配置里最重要的内容有：
-
-- `workspace.id`：工作区的稳定 ID
-- `workspace.version`：配置版本；已登记的内容变化时必须递增
-- `workspace.repository`：Agent 实际工作的绝对路径
-- `agents`：参与流程的 Agent、提示词和 skills
-- `states`：谁可以写入这个状态，以及下一步激活哪个 Agent 或结束任务
-
-完整字段见 [`config-schema.md`](skills/graph-engineering/references/config-schema.md)。配置也可以从
-Markdown 表格生成。
-
-底层命令如下，通常由 skill 代为执行：
-
-```bash
-graphctl config validate /absolute/workspace.yaml
-graphctl workspace register /absolute/workspace.yaml
-graphctl workspace provision <workspace_id>
-```
-
-`provision` 会创建一个飞书群。组织者使用群范围 Session；其他 Agent 按
-`(workspace_id, agent_id)` 各自绑定一个固定话题和 Session。命令可以安全重试，已经创建的资源会
-复用，不会为同一 Agent 反复创建新话题。
-
-如果多个工作区需要使用同一批飞书应用身份，可以显式复用应用；目标工作区仍会获得独立的新群、
-话题和 Session：
-
-```bash
-graphctl workspace provision <workspace_id> \
-  --reuse-bots-from <source_workspace_id>
-```
-
 ## 启动任务和推动状态
 
 工作区初始化完成后，单独确认要启动任务，再执行：
